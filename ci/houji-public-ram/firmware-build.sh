@@ -73,13 +73,15 @@ curl -fsSL --retry 2 \
     -o "$base/basetools.tar.gz"
 echo "a866e053855511985d1d73987024948c04add218530015b8e3c7af5b0996f6f4  $base/basetools.tar.gz" | sha256sum -c
 tar -xf "$base/basetools.tar.gz" -C "$base" basetools/Linux-x86
-ln -sfn "$base/basetools/Linux-x86" "$base/uefi/Mu_Basecore/BaseTools/Source/C/bin"
-test -x "$base/uefi/Mu_Basecore/BaseTools/Source/C/bin/GenSec"
+rm -rf "$base/uefi/Mu_Basecore/BaseTools/Source/C/bin"
+ln -s "$base/basetools/Linux-x86" "$base/uefi/Mu_Basecore/BaseTools/Source/C/bin"
+test -x "$base/basetools/Linux-x86/build"
+test -x "$base/basetools/Linux-x86/GenSec"
 
 # Reuse the caller's pinned compiler and Python for EDK2.
 export CLANG_BIN=/usr/bin/
 export PYTHON_COMMAND=python3
-export PATH="$base/uefi/Mu_Basecore/BaseTools/Source/C/bin:$PATH"
+export PATH="$base/basetools/Linux-x86:$PATH"
 export WORKSPACE="$base/uefi"
 export EDK_TOOLS_PATH="$base/uefi/Mu_Basecore/BaseTools"
 export PACKAGES_PATH="$base/uefi/Platforms/Xiaomi:$base/uefi/Common/Mu:$base/uefi/Common/Mu_OEM_Sample:$base/uefi/Mu_Basecore:$base/uefi/Silicon/Qualcomm:$base/uefi/Silicon/Silicium:$base/unixnu-src/package:$base/vendor:$base/darwinboot-src"
