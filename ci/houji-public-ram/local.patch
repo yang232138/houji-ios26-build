@@ -563,99 +563,105 @@ index 034e551..50a4a91 100644
  
  if __name__ == '__main__':
 
-diff --git a/kernel/overlay/iokit/Kernel/arm/SweetFramebuffer.cpp b/kernel/overlay/iokit/Kernel/arm/SweetFramebuffer.cpp
-index aa02e43..fd7cedb 100644
---- a/kernel/overlay/iokit/Kernel/arm/SweetFramebuffer.cpp
-+++ b/kernel/overlay/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -74,6 +74,71 @@ enum {
- #define SWEET_FB_DOT_PITCH              458     /* iPhone X logical canvas */
- #define HOUJI_LOGICAL_W 1200
- #define HOUJI_LOGICAL_H 2670
+diff --git a/bootloader/ios26/patches/local.patch b/bootloader/ios26/patches/local.patch
+index 582ac30..7aebdde 100644
+--- a/bootloader/ios26/patches/local.patch
++++ b/bootloader/ios26/patches/local.patch
+@@ -441,3 +441,97 @@
+  
+  [Guids]
+    gEfiFileInfoGuid
 +
-+/* Visible text fallback: proves the draw site executes even when the pixel
-+ * path or console mute behaves differently on the phone. */
-+static void houjiLogApple(void) {
-+	IOLog("\n");
-+	IOLog(" HOUJI WHITE APPLE\n");
-+	IOLog("                 ##\n");
-+	IOLog("               ######\n");
-+	IOLog("             ##########\n");
-+	IOLog("           ##############\n");
-+	IOLog("          ################\n");
-+	IOLog("         ##################\n");
-+	IOLog("         ##################\n");
-+	IOLog("         ##################\n");
-+	IOLog("          ################\n");
-+	IOLog("           ##############\n");
-+	IOLog("            ############\n");
-+	IOLog("             ##########\n");
-+	IOLog("              ########\n");
-+	IOLog("               ######\n");
-+	IOLog("\n");
-+}
-+
-+/* White Apple boot mark written into the panel framebuffer. The framebuffer
-+ * is mapped write-combined; OSSynchronizeIO() is the IOKit flush, and the
-+ * console is fully muted across the hold so no writer can cover the mark. */
-+static void houjiDrawWhiteApple(uintptr_t pixels, uint32_t width, uint32_t height,
-+    uint32_t rowBytes) {
-+    if (!pixels || width < 256 || height < 256 || rowBytes < width * 4) return;
-+    const int32_t cx = (int32_t)(width / 2);
-+    const int32_t cy = (int32_t)((uint64_t)height * 42 / 100);
-+    const int32_t r = (int32_t)(width / 4);
-+    const int32_t leftX = cx - r * 52 / 100;
-+    const int32_t rightX = cx + r * 52 / 100;
-+    const int32_t bodyY = cy + r * 18 / 100;
-+    const int32_t lowerY = bodyY + r * 38 / 100;
-+    const int32_t notchY = cy - r * 62 / 100;
-+    const int32_t notchR = r * 66 / 100;
-+    const int32_t leafX = cx + r * 38 / 100;
-+    const int32_t leafY = cy - r * 106 / 100;
-+    const int32_t leafRX = r * 30 / 100;
-+    const int32_t leafRY = r * 46 / 100;
-+    for (int32_t y = cy - (r * 12) / 10; y <= cy + (r * 12) / 10; y++) {
-+        if (y < 0 || y >= (int32_t)height) continue;
-+        uint32_t *row = (uint32_t *)(pixels + (uintptr_t)y * rowBytes);
-+        for (int32_t x = cx - (r * 16) / 10; x <= cx + (r * 16) / 10; x++) {
-+            if (x < 0 || x >= (int32_t)width) continue;
-+            int32_t dx, dy;
-+            bool inside = false;
-+            dx = x - leftX; dy = y - bodyY;
-+            if ((int64_t)dx * dx + (int64_t)dy * dy <= (int64_t)r * r) inside = true;
-+            dx = x - rightX; dy = y - bodyY;
-+            if ((int64_t)dx * dx + (int64_t)dy * dy <= (int64_t)r * r) inside = true;
-+            dx = x - cx; dy = y - lowerY;
-+            if ((int64_t)dx * dx + (int64_t)dy * dy <= (int64_t)r * r) inside = true;
-+            dx = x - cx; dy = y - notchY;
-+            if ((int64_t)dx * dx + (int64_t)dy * dy <= (int64_t)notchR * notchR) inside = false;
-+            dx = x - leafX; dy = y - leafY;
-+            if ((int64_t)dx * dx * leafRY * leafRY + (int64_t)dy * dy * leafRX * leafRX
-+                <= (int64_t)leafRX * leafRX * leafRY * leafRY) inside = true;
-+            if (inside) row[x] = 0xFFFFFFFFu;
-+        }
-+    }
-+    __asm__ volatile("dsb sy" ::: "memory");
-+}
- static uint64_t houji_fb_copy_bytes, houji_fb_present_ticks, houji_fb_max_present_ticks;
- static uint64_t houji_fb_missed_timer_ticks;
- static uint64_t houji_fb_callbacks,houji_fb_due_ticks;
-@@ -378,6 +443,19 @@ AppleCLCD::start(IOService *provider)
- 		return false;
- 	}
- 	fCopyEvent->enable();
-+	houjiLogApple();
-+	{
-+		/* Both the string and per-character console writers honour
-+		 * disableConsoleOutput, so this is the complete screen gate. */
-+		extern int disableConsoleOutput;
-+		disableConsoleOutput = 1;
-+		houji_console_muted = 1;
-+		houjiDrawWhiteApple(fPixels, fWidth, fHeight, fRowBytes);
-+		OSSynchronizeIO();
-+		IOSleep(5000);
-+		disableConsoleOutput = 0;
-+		houji_console_muted = 0;
-+	}
- 	PE_parse_boot_argn("houji_fb_gpu_sync",&fGpuSync,sizeof(fGpuSync));
- 	PE_parse_boot_argn("houji_fb_gpu_cache",&fGpuCache,sizeof(fGpuCache));
- 	uint64_t ctr=0;__asm__ volatile("mrs %0, ctr_el0":"=r"(ctr));
++diff --git a/DarwinBootPkg/Driver/DarwinBoot.c b/DarwinBootPkg/Driver/DarwinBoot.c
++index 6b55e0e..b4c379b 100644
++--- a/DarwinBootPkg/Driver/DarwinBoot.c
+++++ b/DarwinBootPkg/Driver/DarwinBoot.c
++@@ -218,6 +218,79 @@ DiagDraw (CONST CHAR16 *Text, UINTN Row)
++   }
++ }
++ 
+++STATIC
+++VOID
+++DiagApple (VOID)
+++{
+++  EFI_GRAPHICS_OUTPUT_PROTOCOL *Gop;
+++  UINT64                       Video[6];
+++  UINT32                       *Fb;
+++  INT32                        Cx, Cy, R, LeftX, RightX, BodyY, LowerY, NotchY, NotchR;
+++  INT32                        LeafX, LeafY, LeafRx, LeafRy, X, Y, Dx, Dy;
+++  BOOLEAN                      Inside;
+++
+++  if (EFI_ERROR (gBS->LocateProtocol (&gEfiGraphicsOutputProtocolGuid, NULL, (VOID **)&Gop)) ||
+++      EFI_ERROR (DarwinBootVideoFromGop (Gop, Video))) {
+++    return;
+++  }
+++  if ((Video[2] == 0) || (Video[3] < 256) || (Video[4] < 256) || (Video[5] != 32)) {
+++    return;
+++  }
+++  Fb = (UINT32 *)(UINTN)Video[0];
+++  Cx = (INT32)(Video[3] / 2);
+++  Cy = (INT32)(Video[4] * 42 / 100);
+++  R = (INT32)(Video[3] / 4);
+++  LeftX = Cx - R * 52 / 100;
+++  RightX = Cx + R * 52 / 100;
+++  BodyY = Cy + R * 18 / 100;
+++  LowerY = BodyY + R * 38 / 100;
+++  NotchY = Cy - R * 62 / 100;
+++  NotchR = R * 66 / 100;
+++  LeafX = Cx + R * 38 / 100;
+++  LeafY = Cy - R * 106 / 100;
+++  LeafRx = R * 30 / 100;
+++  LeafRy = R * 46 / 100;
+++  for (Y = Cy - R * 12 / 10; Y <= Cy + R * 12 / 10; Y++) {
+++    if ((Y < 0) || (Y >= (INT32)Video[4])) {
+++      continue;
+++    }
+++    for (X = Cx - R * 16 / 10; X <= Cx + R * 16 / 10; X++) {
+++      if ((X < 0) || (X >= (INT32)Video[3])) {
+++        continue;
+++      }
+++      Inside = FALSE;
+++      Dx = X - LeftX;
+++      Dy = Y - BodyY;
+++      if ((INT64)Dx * Dx + (INT64)Dy * Dy <= (INT64)R * R) {
+++        Inside = TRUE;
+++      }
+++      Dx = X - RightX;
+++      if ((INT64)Dx * Dx + (INT64)Dy * Dy <= (INT64)R * R) {
+++        Inside = TRUE;
+++      }
+++      Dx = X - Cx;
+++      Dy = Y - LowerY;
+++      if ((INT64)Dx * Dx + (INT64)Dy * Dy <= (INT64)R * R) {
+++        Inside = TRUE;
+++      }
+++      Dx = X - Cx;
+++      Dy = Y - NotchY;
+++      if ((INT64)Dx * Dx + (INT64)Dy * Dy <= (INT64)NotchR * NotchR) {
+++        Inside = FALSE;
+++      }
+++      Dx = X - LeafX;
+++      Dy = Y - LeafY;
+++      if ((INT64)Dx * Dx * LeafRy * LeafRy + (INT64)Dy * Dy * LeafRx * LeafRx <=
+++          (INT64)LeafRx * LeafRx * LeafRy * LeafRy) {
+++        Inside = TRUE;
+++      }
+++      if (Inside) {
+++        Fb[(UINT64)Y * (Video[2] / 4) + X] = 0xFFFFFFFF;
+++      }
+++    }
+++  }
+++}
+++
++ STATIC
++ EFI_STATUS
++ AllocateWindow (KERNEL *Kernel, UINT64 WindowSize, EFI_PHYSICAL_ADDRESS *Address)
++@@ -517,6 +590,8 @@ Boot (
++           READ_SYSREG (id_aa64mmfr0_el1) & 0xF, (((READ_SYSREG (id_aa64mmfr0_el1) >> 28) & 0xF) == 0xF) ? "NOT supported" : "supported"));
++   DEBUG ((DEBUG_ERROR, "ID_AA64PFR0_EL1  0x%lx\n", READ_SYSREG (id_aa64pfr0_el1)));
++   DEBUG ((DEBUG_ERROR, "\nExiting boot services. A green bar across the top\nmeans the loader handoff assembly ran.\n"));
+++  DiagApple ();
+++  gBS->Stall (2000000);
++   for (Attempt = 0; Attempt < 3; Attempt++) {
++     MapSize = Capacity;
++     Status = gBS->GetMemoryMap (&MapSize, Map, &Key, &Stride, &Version);
