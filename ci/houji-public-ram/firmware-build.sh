@@ -75,13 +75,14 @@ echo "a866e053855511985d1d73987024948c04add218530015b8e3c7af5b0996f6f4  $base/ba
 tar -xf "$base/basetools.tar.gz" -C "$base" basetools/Linux-x86
 rm -rf "$base/uefi/Mu_Basecore/BaseTools/Source/C/bin"
 ln -s "$base/basetools/Linux-x86" "$base/uefi/Mu_Basecore/BaseTools/Source/C/bin"
-test -x "$base/basetools/Linux-x86/build"
 test -x "$base/basetools/Linux-x86/GenSec"
 
-# Reuse the caller's pinned compiler and Python for EDK2.
+# Reuse the caller's pinned compiler and Python for EDK2. 'build' itself is the
+# PosixLike wrapper inside BaseTools, not part of the prebuilt C tools.
 export CLANG_BIN=/usr/bin/
 export PYTHON_COMMAND=python3
-export PATH="$base/basetools/Linux-x86:$PATH"
+export PATH="$base/uefi/Mu_Basecore/BaseTools/BinWrappers/PosixLike:$base/basetools/Linux-x86:$PATH"
+test -x "$base/uefi/Mu_Basecore/BaseTools/BinWrappers/PosixLike/build"
 export WORKSPACE="$base/uefi"
 export EDK_TOOLS_PATH="$base/uefi/Mu_Basecore/BaseTools"
 export PACKAGES_PATH="$base/uefi/Platforms/Xiaomi:$base/uefi/Common/Mu:$base/uefi/Common/Mu_OEM_Sample:$base/uefi/Mu_Basecore:$base/uefi/Silicon/Qualcomm:$base/uefi/Silicon/Silicium:$base/unixnu-src/package:$base/vendor:$base/darwinboot-src"
