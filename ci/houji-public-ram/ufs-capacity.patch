@@ -1,5 +1,6 @@
 diff --git a/iokit/Kernel/houji-ufs-root/HoujiUfsCapacityHandoff.h b/iokit/Kernel/houji-ufs-root/HoujiUfsCapacityHandoff.h
 new file mode 100644
+index 0000000..36faf96
 --- /dev/null
 +++ b/iokit/Kernel/houji-ufs-root/HoujiUfsCapacityHandoff.h
 @@ -0,0 +1,23 @@
@@ -28,6 +29,7 @@ new file mode 100644
 +#endif
 diff --git a/iokit/Kernel/houji-ufs-root/HoujiUfsCapacityNative.inc b/iokit/Kernel/houji-ufs-root/HoujiUfsCapacityNative.inc
 new file mode 100644
+index 0000000..8d48da8
 --- /dev/null
 +++ b/iokit/Kernel/houji-ufs-root/HoujiUfsCapacityNative.inc
 @@ -0,0 +1,168 @@
@@ -201,6 +203,7 @@ new file mode 100644
 +}
 diff --git a/iokit/Kernel/houji-ufs-root/HoujiUfsCapacityPort.h b/iokit/Kernel/houji-ufs-root/HoujiUfsCapacityPort.h
 new file mode 100644
+index 0000000..b78b3e5
 --- /dev/null
 +++ b/iokit/Kernel/houji-ufs-root/HoujiUfsCapacityPort.h
 @@ -0,0 +1,20 @@
@@ -225,6 +228,7 @@ new file mode 100644
 +
 +#endif
 diff --git a/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp b/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp
+index 6f6d702..d3fafcd 100644
 --- a/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp
 +++ b/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp
 @@ -1,4 +1,5 @@
@@ -233,7 +237,7 @@ diff --git a/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp b/iokit/Kernel/houji-u
  // SPDX-License-Identifier: BSD-2-Clause-Patent
  // Read transport from pinned UniXNU Ace 5/NativeUfs; houji-specific GPT-only probe.
  // No IOBlockStorageDevice bindings. Optional preallocated-file diagnostic writer.
-@@ -36,6 +37,9 @@
+@@ -36,6 +37,9 @@ extern const uint8_t verified_root_key[];
  #include "GccUfs.h"
  #include "RootDiagnostics.h"
  #include "TransferPoll.h"
@@ -243,7 +247,7 @@ diff --git a/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp b/iokit/Kernel/houji-u
  #include "GiuliaSmmuTakeover.h"
  #include "HoujiCpuFrequency.h"
  #include "HoujiBatterySurvey.inc"
-@@ -132,6 +136,7 @@
+@@ -132,6 +136,7 @@ static void smmuBypassStream (uint16_t stream, OSSharedPtr<IOMemoryMap> &keep, u
  static bool houjiNativeGpuFsAllowed(void);
  namespace {
  #include "RootTransportLayout.h"
@@ -251,7 +255,7 @@ diff --git a/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp b/iokit/Kernel/houji-u
  
  struct UfsHost {
    OSSharedPtr<IOMemoryMap> hcMap, smmuMap;
-@@ -143,6 +148,8 @@
+@@ -143,6 +148,8 @@ struct UfsHost {
    bool ready;
    bool poisoned = false;
    uintptr_t smmu = 0, cb = 0;
@@ -260,7 +264,7 @@ diff --git a/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp b/iokit/Kernel/houji-u
  };
  UfsHost gHost = { OSSharedPtr<IOMemoryMap> (), OSSharedPtr<IOMemoryMap> (), 0, nullptr, nullptr, 0, nullptr, false };
  static bool gLogEnabled, gRootEnabled, gRootArmed, gReturnRecovery;
-@@ -206,8 +213,14 @@
+@@ -206,8 +213,14 @@ static void hostWrite (unsigned offset, uint32_t value)
  
  #include "RootQueue.h"
  
@@ -276,19 +280,20 @@ diff --git a/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp b/iokit/Kernel/houji-u
  
  // Bring the live controller up for reading: map, SMMU pass-through for the UFS stream, take over
  // the request list, wake the device from UFS-PowerDown and wait for LUN 0 to be ready.
-@@ -218,6 +231,10 @@
-   *why = "native UFS disabled in the RAM-only kernel";
-   return false;
+@@ -220,6 +233,10 @@ static bool hostBringUp (const char **why)
  }
-+}
-+
-+extern "C" int houji26_ufs_capacity_from_handoff(const HoujiUfsCapacityHandoff *handoff, uint64_t *blocks) {
-+  return runProbeCapacity(handoff, blocks);
  }
  
++extern "C" int houji26_ufs_capacity_from_handoff(const HoujiUfsCapacityHandoff *handoff, uint64_t *blocks) {
++  return runProbeCapacity(handoff, blocks);
++}
++
  #include "HoujiGptCheck.h"
+ #include "HoujiRootWindow.h"
+ #include "HoujiFirmwareUfs.inc"
 diff --git a/iokit/Kernel/houji-ufs-root/HoujiUfsReadQualification.h b/iokit/Kernel/houji-ufs-root/HoujiUfsReadQualification.h
 new file mode 100644
+index 0000000..31fd39f
 --- /dev/null
 +++ b/iokit/Kernel/houji-ufs-root/HoujiUfsReadQualification.h
 @@ -0,0 +1,118 @@
@@ -353,8 +358,8 @@ new file mode 100644
 +         (io.read32(io.cookie, 0x300, &mode) || (mode & 1))))
 +        return false;
 +    return !io.read32(io.cookie, 0x34, &enabled) && (enabled & 1) &&
-+        !io.read32(io.cookie, 0x30, &ready) && (ready & 0xf) == 0xf &&
-+        !io.read32(io.cookie, 0x20, &interrupt) && !(interrupt & kUfsFatalStatus) &&
++        !io.read32(io.cookie, 0x30, &ready) && (ready & 0x3f) == 0xf &&
++        !io.read32(io.cookie, 0x20, &interrupt) && !(interrupt & kUfsCapacityErrorStatus) &&
 +        !io.read32(io.cookie, 0x24, &interruptEnable) && !interruptEnable &&
 +        !io.read32(io.cookie, 0x58, &transfer) && !transfer &&
 +        !io.read32(io.cookie, 0x78, &task) && !task &&
@@ -411,9 +416,10 @@ new file mode 100644
 +}
 +#endif
 diff --git a/iokit/Kernel/houji-ufs-root/RootCommands.h b/iokit/Kernel/houji-ufs-root/RootCommands.h
+index a4e2f82..937f89a 100644
 --- a/iokit/Kernel/houji-ufs-root/RootCommands.h
 +++ b/iokit/Kernel/houji-ufs-root/RootCommands.h
-@@ -11,7 +11,14 @@
+@@ -11,7 +11,14 @@ static HoujiFirmwareReadGrant gFirmwareReadGrant;
  struct HardwareTransferPort {
    uint64_t deadline;
    uint32_t doorbell () { return read32 (gHost.hc, 0x58); }
@@ -429,7 +435,7 @@ diff --git a/iokit/Kernel/houji-ufs-root/RootCommands.h b/iokit/Kernel/houji-ufs
    uint32_t completedOcs () {
      cacheInvalidate (gHost.virt, 64);
      return *reinterpret_cast<volatile uint32_t *> (gHost.virt + 8) & 0xff;
-@@ -33,12 +40,84 @@
+@@ -33,12 +40,84 @@ static uint32_t loadBe32 (const uint8_t *at)
    return (uint32_t (at[0]) << 24) | (uint32_t (at[1]) << 16) | (uint32_t (at[2]) << 8) | at[3];
  }
  
@@ -452,7 +458,7 @@ diff --git a/iokit/Kernel/houji-ufs-root/RootCommands.h b/iokit/Kernel/houji-ufs
 +    gHost.ready = false;
 +    return recordTransport (kIOReturnBusy, *ocs);
 +  }
-+  if (read32 (gHost.hc, 0x20) & kUfsFatalStatus) {
++  if (read32 (gHost.hc, 0x20) & kUfsCapacityErrorStatus) {
 +    gHost.poisoned = true;
 +    gHost.ready = false;
 +    return recordTransport (kIOReturnIOError, *ocs);
@@ -500,7 +506,7 @@ diff --git a/iokit/Kernel/houji-ufs-root/RootCommands.h b/iokit/Kernel/houji-ufs
 +  clock_interval_to_deadline (timeoutUs, kMicrosecondScale, &port.deadline);
 +  hostWrite (0x58, 1);
 +  UfsTransferPoll state;
-+  UfsTransferEnd end = pollUfsTransfer (port, state);
++  UfsTransferEnd end = pollUfsTransfer (port, state, kUfsCapacityErrorStatus);
 +  gRootDiagnostic.polls = state.polls;
 +  gRootDiagnostic.dbSeen = state.doorbellSeen;
 +  gRootDiagnostic.isSeen = state.interruptSeen;
@@ -518,7 +524,16 @@ diff --git a/iokit/Kernel/houji-ufs-root/RootCommands.h b/iokit/Kernel/houji-ufs
  }
  
  static bool hostClearUcd (void)
-@@ -155,6 +234,22 @@
+@@ -51,7 +130,7 @@ static bool hostClearUcd (void)
+     recordTransport (kIOReturnBusy, 15);
+     return false;
+   }
+-  if (read32 (gHost.hc, 0x20) & kUfsFatalStatus) {
++  if (read32 (gHost.hc, 0x20) & kUfsCapacityErrorStatus) {
+     gHost.poisoned = true;
+     gHost.ready = false;
+     recordTransport (kIOReturnIOError, 15);
+@@ -155,6 +234,22 @@ static IOReturn hostScsi (uint8_t lun, const uint8_t *cdb, unsigned cdbLength, b
    return hostScsiDir (lun, cdb, cdbLength, dataBytes ? 2U : 0U, dataBytes, timeoutUs, scsiStatus);
  }
  
@@ -542,6 +557,7 @@ diff --git a/iokit/Kernel/houji-ufs-root/RootCommands.h b/iokit/Kernel/houji-ufs
  static IOReturn hostQueryRead (uint8_t opcode, uint8_t idn, uint32_t *value)
  {
 diff --git a/iokit/Kernel/houji-ufs-root/RootTransportLayout.h b/iokit/Kernel/houji-ufs-root/RootTransportLayout.h
+index a6245c6..5e3413f 100644
 --- a/iokit/Kernel/houji-ufs-root/RootTransportLayout.h
 +++ b/iokit/Kernel/houji-ufs-root/RootTransportLayout.h
 @@ -1,4 +1,5 @@
@@ -551,9 +567,10 @@ diff --git a/iokit/Kernel/houji-ufs-root/RootTransportLayout.h b/iokit/Kernel/ho
    kUcdOffset = 4096,
    kRspOffset = 512,
 diff --git a/iokit/Kernel/houji-ufs-root/TransferPoll.h b/iokit/Kernel/houji-ufs-root/TransferPoll.h
+index 2f56e30..aefd595 100644
 --- a/iokit/Kernel/houji-ufs-root/TransferPoll.h
 +++ b/iokit/Kernel/houji-ufs-root/TransferPoll.h
-@@ -1,6 +1,7 @@
+@@ -1,21 +1,24 @@
  // SPDX-License-Identifier: BSD-2-Clause-Patent
  // Single-slot completion policy. Port supplies ordered MMIO, invalidate-only
  // descriptor reads, a monotonic deadline and bounded pacing. No resubmission.
@@ -561,3 +578,22 @@ diff --git a/iokit/Kernel/houji-ufs-root/TransferPoll.h b/iokit/Kernel/houji-ufs
  enum class UfsTransferEnd { Completed, Fatal, Timeout };
  struct UfsTransferPoll {
    uint32_t polls = 0, doorbellSeen = 0, interruptSeen = 0, ocs = 15;
+ };
+ static constexpr uint32_t kUfsFatalStatus = 0x71880U;
++static constexpr uint32_t kUfsUicErrorStatus = 1U << 2;
++static constexpr uint32_t kUfsCapacityErrorStatus = kUfsFatalStatus | kUfsUicErrorStatus;
+ 
+ template <class Port>
+-static UfsTransferEnd pollUfsTransfer(Port &port, UfsTransferPoll &state)
++static UfsTransferEnd pollUfsTransfer(Port &port, UfsTransferPoll &state, uint32_t errorMask = kUfsFatalStatus)
+ {
+   for (;;) {
+     ++state.polls;
+     uint32_t doorbell = port.doorbell();
+     state.doorbellSeen |= doorbell;
+     state.interruptSeen |= port.interrupt();
+-    if (state.interruptSeen & kUfsFatalStatus) return UfsTransferEnd::Fatal;
++    if (state.interruptSeen & errorMask) return UfsTransferEnd::Fatal;
+     if (!(doorbell & 1)) {
+       state.ocs = port.completedOcs();
+       // A zero doorbell alone does not prove that this command was accepted.
