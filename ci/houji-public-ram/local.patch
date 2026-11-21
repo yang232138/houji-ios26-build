@@ -564,7 +564,7 @@ index 034e551..50a4a91 100644
  if __name__ == '__main__':
 
 diff --git a/bootloader/ios26/patches/local.patch b/bootloader/ios26/patches/local.patch
-index 582ac30..7aebdde 100644
+index 582ac30..e656183 100644
 --- a/bootloader/ios26/patches/local.patch
 +++ b/bootloader/ios26/patches/local.patch
 @@ -441,3 +441,97 @@
@@ -573,7 +573,7 @@ index 582ac30..7aebdde 100644
     gEfiFileInfoGuid
 +
 +diff --git a/DarwinBootPkg/Driver/DarwinBoot.c b/DarwinBootPkg/Driver/DarwinBoot.c
-+index 6b55e0e..b4c379b 100644
++index 6b55e0e..0dc1a9b 100644
 +--- a/DarwinBootPkg/Driver/DarwinBoot.c
 ++++ b/DarwinBootPkg/Driver/DarwinBoot.c
 +@@ -218,6 +218,79 @@ DiagDraw (CONST CHAR16 *Text, UINTN Row)
@@ -600,8 +600,8 @@ index 582ac30..7aebdde 100644
 ++  }
 ++  Fb = (UINT32 *)(UINTN)Video[0];
 ++  Cx = (INT32)(Video[3] / 2);
-++  Cy = (INT32)(Video[4] * 42 / 100);
-++  R = (INT32)(Video[3] / 4);
+++  Cy = (INT32)(Video[4] * 62 / 100);
+++  R = (INT32)(Video[3] / 6);
 ++  LeftX = Cx - R * 52 / 100;
 ++  RightX = Cx + R * 52 / 100;
 ++  BodyY = Cy + R * 18 / 100;
@@ -661,7 +661,7 @@ index 582ac30..7aebdde 100644
 +   DEBUG ((DEBUG_ERROR, "ID_AA64PFR0_EL1  0x%lx\n", READ_SYSREG (id_aa64pfr0_el1)));
 +   DEBUG ((DEBUG_ERROR, "\nExiting boot services. A green bar across the top\nmeans the loader handoff assembly ran.\n"));
 ++  DiagApple ();
-++  gBS->Stall (2000000);
+++  gBS->Stall (2500000);
 +   for (Attempt = 0; Attempt < 3; Attempt++) {
 +     MapSize = Capacity;
 +     Status = gBS->GetMemoryMap (&MapSize, Map, &Key, &Stride, &Version);
