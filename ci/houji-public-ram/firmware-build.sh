@@ -160,6 +160,23 @@ PY
 cp "$base/base.adt" "$base/inputs/houji.base.adt"
 python3 "$base/houji/tools/make-ios26-adt.py" --input "$base/inputs/houji.base.adt" \
     --output "$base/inputs/houji.adt"
+# This device's UEFI map reports about 405 MiB free above 0xB8000000; the
+# 2 GiB default cannot be allocated there. Size the owned window to the
+# reported free range instead of claiming memory the firmware does not expose.
+python3 - "$base" <<'PY'
+import struct, sys
+from pathlib import Path
+base = Path(sys.argv[1])
+sys.path.insert(0, str(base / "houji/tools"))
+from ios26_adt import parse, serialize
+path = base / "inputs/houji.adt"
+tree = parse(path.read_bytes())
+tree.child("chosen").set("darwinboot-memory-size", struct.pack("<Q", 0x18000000))
+blob = serialize(tree)
+assert serialize(parse(blob)) == blob
+path.write_bytes(blob)
+print("darwinboot-memory-size -> 0x18000000 (fits the reported UEFI free window)")
+PY
 cp "$darwinboot" "$base/inputs/DarwinBoot.efi"
 python3 "$base/houji/tools/make-ios26-first-entry.py" --inputs "$base/inputs" \
     --output "$base/payload.img"
