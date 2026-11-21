@@ -25,6 +25,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             ci/houji-public-ram/assemble.sh
+            ci/houji-public-ram/firmware.py
             ci/houji-public-ram/local.patch
             ci/houji-public-ram/symbolsets.patch
             ci/houji-public-ram/ufs-capacity.patch
@@ -41,6 +42,15 @@ jobs:
           git -C "$tree" apply --check "$patch"
           git -C "$tree" apply "$patch"
           grep -F 'iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp optional iokitcpp' "$tree/iokit/conf/files"
+
+      - name: Generate the pinned firmware headers required by the RAM source tree
+        shell: bash
+        env:
+          HOUJI_SQE_A: ${{ secrets.HOUJI_PUBLIC_RAM_SQE_A }}
+          HOUJI_SQE_B: ${{ secrets.HOUJI_PUBLIC_RAM_SQE_B }}
+        run: |
+          set -euo pipefail
+          python3 ci/houji-public-ram/firmware.py
 
       - name: Build and verify the arm64e HOUJI XNU kernel
         shell: bash
