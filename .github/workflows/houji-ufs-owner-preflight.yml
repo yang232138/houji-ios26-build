@@ -1,0 +1,57 @@
+name: houji UFS register-only preflight firmware
+
+on:
+  push:
+    branches:
+      - houji-ufs-owner-preflight
+    paths:
+      - '.github/workflows/houji-ufs-owner-preflight.yml'
+      - 'ci/houji-ufs-owner-preflight/**'
+
+permissions:
+  contents: read
+
+jobs:
+  firmware:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      HOUJI_PUBLIC_REVISION: 98bc0960f96076de8e8d16efcfb0c0603b166b85
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            ci/houji-ufs-owner-preflight/
+            private/vendor-bundle.zip
+          sparse-checkout-cone-mode: false
+
+      - name: Install the firmware tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends clang llvm lld make gcc uuid-dev nasm acpica-tools python3-venv
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" -q install cryptography==50.0.2
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+
+      - name: Link the EFI application and generate the firmware volume
+        env:
+          HOUJI_ARTIFACT_KEY: ${{ secrets.HOUJI_PUBLIC_RAM_ARTIFACT_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          bash ci/houji-ufs-owner-preflight/build.sh 2>&1 | tee evidence/firmware.log
+
+      - name: Save the encrypted firmware and hash receipt
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: houji-ufs-owner-preflight
+          path: |
+            evidence/owner-preflight.fd.aesgcm
+            evidence/build.json
+            evidence/firmware.log
+          retention-days: 3
+          if-no-files-found: error
