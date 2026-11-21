@@ -114,8 +114,6 @@ jobs:
 
       - name: Build UEFI, DarwinBoot and the RAM payload
         env:
-          HOUJI_BASE_ADT: ${{ secrets.HOUJI_PUBLIC_RAM_BASE_ADT }}
-          HOUJI_VENDOR_BUNDLE: ${{ secrets.HOUJI_PUBLIC_RAM_VENDOR }}
           HOUJI_ARTIFACT_KEY: ${{ secrets.HOUJI_PUBLIC_RAM_ARTIFACT_KEY }}
         run: |
           set -euo pipefail

@@ -55,16 +55,26 @@ python3 "$base/houji/tools/prepare-ios26-sources.py" boot_manager \
 python3 "$base/houji/tools/prepare-ios26-sources.py" bootloader \
     --upstream "$base/darwinboot" --output "$base/darwinboot-src"
 
-# OEM vendor package and the base ADT are private Actions secrets.
-python3 - "$base" <<'PY'
-import base64, io, os, zipfile
+# OEM vendor package and the base ADT travel with the private repository, so
+# the exact bytes are checked here instead of relying on secret transport.
+python3 - "$base" "$GITHUB_WORKSPACE" <<'PY'
+import hashlib, shutil, sys, zipfile
 from pathlib import Path
-base = Path(os.environ["RUNNER_TEMP"]) / "houji-firmware"
+base = Path(sys.argv[1])
+workspace = Path(sys.argv[2])
+vendor_zip = workspace / "private/vendor-bundle.zip"
+base_adt = workspace / "private/base.adt"
+assert hashlib.sha256(vendor_zip.read_bytes()).hexdigest() == \
+    "74374cfbf47ac723ba66f7a0a4651781225e0dfb914b8eb5ebbf3fa15d1c6ba7", "vendor bundle differs"
+assert hashlib.sha256(base_adt.read_bytes()).hexdigest() == \
+    "9dbc4786354797a7a8819027a10301b59f9aba14c023ddbb11314868527a5e35", "base ADT differs"
 vendor = base / "vendor"
 vendor.mkdir()
-with zipfile.ZipFile(io.BytesIO(base64.b64decode(os.environ["HOUJI_VENDOR_BUNDLE"], validate=True))) as archive:
+with zipfile.ZipFile(vendor_zip) as archive:
     archive.extractall(vendor)
-(base / "base.adt").write_bytes(base64.b64decode(os.environ["HOUJI_BASE_ADT"], validate=True))
+if not (vendor / "HoujiVendorPkg/EnvDxeEnhanced/EnvDxeEnhanced.inf").is_file():
+    raise SystemExit("vendor bundle lacks the OEM EnvDxeEnhanced module")
+shutil.copyfile(base_adt, base / "base.adt")
 PY
 # EDK2 only registers a package root that carries a .dec; the OEM bundle only
 # ships the binary module, so describe the package it already lives in.
