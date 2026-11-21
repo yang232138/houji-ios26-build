@@ -1,0 +1,563 @@
+diff --git a/iokit/Kernel/houji-ufs-root/HoujiUfsCapacityHandoff.h b/iokit/Kernel/houji-ufs-root/HoujiUfsCapacityHandoff.h
+new file mode 100644
+--- /dev/null
++++ b/iokit/Kernel/houji-ufs-root/HoujiUfsCapacityHandoff.h
+@@ -0,0 +1,23 @@
++// SPDX-License-Identifier: BSD-2-Clause-Patent
++#ifndef HOUJI_UFS_CAPACITY_HANDOFF_H
++#define HOUJI_UFS_CAPACITY_HANDOFF_H
++
++#include "ArmSmmu4KContext.h"
++class IOBufferMemoryDescriptor;
++
++// Trusted board-internal handoff, after ExitBootServices. The producer keeps
++// the link active, relinquishes the legacy queues, publishes an already
++// isolated SID 0x60 translation, and transfers exclusive ownership of the
++// queue, context bank, ASID and immutable table memory. Boot args and ADT
++// addresses alone do not confer ownership.
++struct HoujiUfsCapacityHandoff {
++    IOBufferMemoryDescriptor *requests;
++    IOBufferMemoryDescriptor *pageTables;
++    const ArmSmmu4KContextConfig *context;
++    unsigned tablePages;
++    unsigned streamSlot;
++    unsigned contextBank;
++};
++
++extern "C" int houji26_ufs_capacity_from_handoff(const HoujiUfsCapacityHandoff *, uint64_t *blocks);
++#endif
+diff --git a/iokit/Kernel/houji-ufs-root/HoujiUfsCapacityNative.inc b/iokit/Kernel/houji-ufs-root/HoujiUfsCapacityNative.inc
+new file mode 100644
+--- /dev/null
++++ b/iokit/Kernel/houji-ufs-root/HoujiUfsCapacityNative.inc
+@@ -0,0 +1,168 @@
++// SPDX-License-Identifier: BSD-2-Clause-Patent
++// Phase A sees only one CAPACITY(16) request and never alters SMMU routing.
++#include "HoujiUfsCapacityPort.h"
++
++static constexpr uint64_t kCapacitySmmuAddress = 0x15000000;
++static constexpr unsigned kCapacitySmmuBytes = 0x100000;
++static constexpr unsigned kCapacityMaxTablePages = 8;
++
++struct HoujiCapacityTables {
++  const volatile uint64_t *words;
++  uint64_t physical, bytes;
++};
++
++static int probeTableRead(void *cookie, uint64_t address, uint64_t *value) {
++  const auto &tables = *static_cast<const HoujiCapacityTables *>(cookie);
++  if ((address & 7) || !houjiUfsOwnedRange(tables.physical, tables.bytes, address, 8)) return 1;
++  *value = tables.words[(address - tables.physical) / 8];
++  return 0;
++}
++
++static int probeHciRead(void *, size_t offset, uint32_t *value) {
++  if (!gHost.hc || (offset & 3) || offset > UFS_HC_SIZE - 4) return 1;
++  *value = read32(gHost.hc, static_cast<unsigned>(offset));
++  return 0;
++}
++
++static int probeSmmuRead32(void *, size_t offset, uint32_t *value) {
++  if (!gHost.smmu || (offset & 3) || offset > kCapacitySmmuBytes - 4) return 1;
++  *value = read32(gHost.smmu, static_cast<unsigned>(offset));
++  return 0;
++}
++
++static int probeSmmuRead64(void *, size_t offset, uint64_t *value) {
++  if (!gHost.smmu || (offset & 7) || offset > kCapacitySmmuBytes - 8) return 1;
++  *value = *reinterpret_cast<volatile uint64_t *>(gHost.smmu + offset);
++  return 0;
++}
++
++// The shared observers require complete IO callbacks. No SMMU write is valid.
++static int probeDeny32(void *, size_t, uint32_t) { return 1; }
++static int probeDeny64(void *, size_t, uint64_t) { return 1; }
++static int probeBarrier(void *) {
++  probeDeviceBarrier();
++  return 0;
++}
++
++static uint64_t probeOwnedBuffer(IOBufferMemoryDescriptor &memory, uint64_t bytes) {
++  IOByteCount contiguous = 0;
++  const uint64_t physical = memory.getPhysicalSegment(0, &contiguous, kIOMemoryMapperNone);
++  const uintptr_t virt = reinterpret_cast<uintptr_t>(memory.getBytesNoCopy());
++  if (!virt || (virt & 4095) || !physical || (physical & 4095) ||
++      memory.getLength() < bytes || contiguous < bytes ||
++      !houjiUfsOwnedRange(gPhysBase, gPhysSize, physical, bytes))
++    return 0;
++  return physical;
++}
++
++static int probeStop(const char *why) {
++  IOLog("HOUJI26 UFS CAPACITY STOP: %s\n", why);
++  return kIOReturnNotReady;
++}
++
++static int runProbeCapacity(const HoujiUfsCapacityHandoff *handoff, uint64_t *blocks) {
++  static unsigned claimed;
++  if (!blocks) return kIOReturnBadArgument;
++  *blocks = 0;
++  if (!handoff || !handoff->requests || !handoff->pageTables || !handoff->context)
++    return probeStop("no trusted board handoff");
++  if (__atomic_exchange_n(&claimed, 1U, __ATOMIC_ACQ_REL))
++    return probeStop("one attempt per boot");
++  if (handoff->requests == handoff->pageTables || handoff->tablePages == 0 ||
++      handoff->tablePages > kCapacityMaxTablePages)
++    return probeStop("invalid DMA or page-table memory");
++  if (probeCacheLineBytes() != 64) return probeStop("cache line differs from the 64-byte transport");
++
++  const uint64_t bufferPa = probeOwnedBuffer(*handoff->requests, kDmaBytes);
++  const uint64_t tableBytes = uint64_t(handoff->tablePages) * 4096;
++  const uint64_t tablePa = probeOwnedBuffer(*handoff->pageTables, tableBytes);
++  const auto &context = *handoff->context;
++  if (!bufferPa || !tablePa || !context.lower || !context.lower_tables || context.upper ||
++      context.upper_tables || !context.coherent_walk || context.lower->table_physical != tablePa ||
++      context.lower_tables->table_pages > handoff->tablePages ||
++      (bufferPa < tablePa + tableBytes && tablePa < bufferPa + kDmaBytes))
++    return probeStop("DMA and table pools are not separate owned memory");
++
++  // The producer has relinquished these allocations. Keep both pinned on
++  // every path once adopted, especially if a timeout leaves DMA outstanding.
++  handoff->requests->retain();
++  handoff->pageTables->retain();
++  gHost.dma = handoff->requests;
++  gHost.virt = static_cast<uint8_t *>(handoff->requests->getBytesNoCopy());
++  gHost.phys = bufferPa;
++  gHost.lock = IOLockAlloc();
++  if (!gHost.lock) return probeStop("queue lock");
++  gHost.hc = mapPhys(UFS_HC_BASE, UFS_HC_SIZE, gHost.hcMap);
++  gHost.smmu = mapPhys(kCapacitySmmuAddress, kCapacitySmmuBytes, gHost.smmuMap);
++  if (!gHost.hc || !gHost.smmu) return probeStop("HCI or SMMU mapping");
++  const unsigned caps = read32(gHost.hc, 0);
++  if (!(caps & (1U << 24)) && bufferPa + kDmaBytes > UINT64_C(0x100000000))
++    return probeStop("controller DMA address width");
++  const HoujiUfsQueueIo queue = {nullptr, probeHciRead};
++  if (!houjiUfsIdleHandoff(queue, 0)) return probeStop("legacy queue not released and idle");
++
++  HoujiCapacityTables pool = {
++    static_cast<const volatile uint64_t *>(handoff->pageTables->getBytesNoCopy()), tablePa, tableBytes};
++  const ArmSmmu4KRange range = {bufferPa, bufferPa, kDmaBytes, ArmSmmu4KRead | ArmSmmu4KWrite, 1, 3};
++  unsigned char visited[kCapacityMaxTablePages];
++  const ArmSmmu4KAuditRegion region = {&range, 1, handoff->tablePages,
++    size_t(handoff->tablePages) * 512, visited, sizeof(visited)};
++  const ArmSmmu4KAuditConfig audit = {{&pool, probeTableRead}, &region, nullptr};
++  const ArmSmmu4KIo smmu = {nullptr, kCapacitySmmuBytes, probeSmmuRead32, probeSmmuRead64,
++    probeDeny32, probeDeny64, probeBarrier};
++  const ArmSmmu4KStream expected = {handoff->streamSlot, 0x60};
++  ArmSmmu4KStreamState stream = {};
++  ArmSmmu4KStreamResult route;
++  if (ArmSmmu4KAdoptStreams(&smmu, &stream, &expected, 1, handoff->contextBank, &context, &route))
++    return probeStop("exclusive translated SID unavailable");
++  ArmSmmu4KAuditResult observed;
++  if (ArmSmmu4KObserveAuditedContext(&smmu, stream.bank, &context, &audit, &observed) ||
++      !observed.complete || !houjiUfsIdleHandoff(queue, 0))
++    return probeStop("initial table audit or final idle check");
++  gHost.cb = gHost.smmu + observed.after.context_offset;
++
++  bzero(gHost.virt, kDmaBytes);
++  cacheCivac(gHost.virt, kDmaBytes);
++  hostWrite(0x50, uint32_t(bufferPa));
++  hostWrite(0x54, uint32_t(bufferPa >> 32));
++  if (!houjiUfsIdleHandoff(queue, bufferPa))
++    return probeStop("request list address or idle readback");
++  hostWrite(0x60, 1);
++  if (!hostWaitRegister(0x60, 1, 1))
++    return probeStop("request list start timeout; buffers retained");
++
++  const HoujiUfsReadLease lease = {&queue, &smmu, &stream, &context, &audit};
++  gHost.phaseAReadLease = &lease;
++  gHost.ready = true;
++  const IOReturn status = hostReadProbeCapacity(blocks);
++  gHost.phaseAReadLease = nullptr;
++  gHost.ready = false;
++  if (status == kIOReturnTimeout) {
++    *blocks = 0;
++    return probeStop("READ CAPACITY timeout; queue and DMA retained");
++  }
++  if (gHost.poisoned || !houjiUfsQueueMatches(queue, bufferPa) ||
++      ArmSmmu4KObserveStreams(&smmu, &stream, &context, &route)) {
++    *blocks = 0;
++    return probeStop("controller ownership uncertain; buffers retained");
++  }
++  hostWrite(0x60, 0);
++  if (!hostWaitRegister(0x60, 1, 0) || !houjiUfsIdleHandoff(queue, bufferPa)) {
++    *blocks = 0;
++    return probeStop("request list stop not confirmed; buffers retained");
++  }
++  hostWrite(0x50, 0);
++  hostWrite(0x54, 0);
++  if (!houjiUfsIdleHandoff(queue, 0)) {
++    *blocks = 0;
++    return probeStop("queue clear readback; buffers retained");
++  }
++  if (status != kIOReturnSuccess) {
++    IOLog("HOUJI26 UFS CAPACITY STOP: REPLY IOReturn=%x SCSI=%x OCS=%x\n",
++          unsigned(status), gRootDiagnostic.scsi, gRootDiagnostic.ocs);
++    return status;
++  }
++  IOLog("HOUJI26 UFS CAPACITY PASS: LUN0 blocks=%llu block_size=4096\n",
++        static_cast<unsigned long long>(*blocks));
++  return kIOReturnSuccess;
++}
+diff --git a/iokit/Kernel/houji-ufs-root/HoujiUfsCapacityPort.h b/iokit/Kernel/houji-ufs-root/HoujiUfsCapacityPort.h
+new file mode 100644
+--- /dev/null
++++ b/iokit/Kernel/houji-ufs-root/HoujiUfsCapacityPort.h
+@@ -0,0 +1,20 @@
++// SPDX-License-Identifier: BSD-2-Clause-Patent
++#ifndef HOUJI_UFS_CAPACITY_PORT_H
++#define HOUJI_UFS_CAPACITY_PORT_H
++
++#include "HoujiUfsReadQualification.h"
++
++// State expected on the existing active legacy link after its former owner
++// explicitly stopped both queue engines and retired their request buffers.
++static inline bool houjiUfsIdleHandoff(const HoujiUfsQueueIo &io, uint64_t expectedBase) {
++    return houjiUfsQueueMatches(io, expectedBase, 0);
++}
++
++static inline bool houjiUfsOwnedRange(uint64_t base, uint64_t bytes,
++                                      uint64_t start, uint64_t length) {
++    return base && length && base <= UINT64_MAX - bytes && start <= UINT64_MAX - length &&
++        start >= base && start - base <= bytes &&
++        length <= bytes - (start - base);
++}
++
++#endif
+diff --git a/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp b/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp
+--- a/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp
++++ b/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp
+@@ -1,4 +1,5 @@
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
++#define HOUJI_UFS_PHASE_A_ONLY 1
+ // SPDX-License-Identifier: BSD-2-Clause-Patent
+ // Read transport from pinned UniXNU Ace 5/NativeUfs; houji-specific GPT-only probe.
+ // No IOBlockStorageDevice bindings. Optional preallocated-file diagnostic writer.
+@@ -36,6 +37,9 @@
+ #include "GccUfs.h"
+ #include "RootDiagnostics.h"
+ #include "TransferPoll.h"
++#include "HoujiUfsCapacityHandoff.h"
++#include "ArmSmmu4KAudit.h"
++#include "ArmSmmu4KStreams.h"
+ #include "GiuliaSmmuTakeover.h"
+ #include "HoujiCpuFrequency.h"
+ #include "HoujiBatterySurvey.inc"
+@@ -132,6 +136,7 @@
+ static bool houjiNativeGpuFsAllowed(void);
+ namespace {
+ #include "RootTransportLayout.h"
++#include "HoujiUfsReadQualification.h"
+ 
+ struct UfsHost {
+   OSSharedPtr<IOMemoryMap> hcMap, smmuMap;
+@@ -143,6 +148,8 @@
+   bool ready;
+   bool poisoned = false;
+   uintptr_t smmu = 0, cb = 0;
++  const HoujiUfsReadLease *phaseAReadLease = nullptr;
++  bool phaseACapacityIssued = false;
+ };
+ UfsHost gHost = { OSSharedPtr<IOMemoryMap> (), OSSharedPtr<IOMemoryMap> (), 0, nullptr, nullptr, 0, nullptr, false };
+ static bool gLogEnabled, gRootEnabled, gRootArmed, gReturnRecovery;
+@@ -206,8 +213,14 @@
+ 
+ #include "RootQueue.h"
+ 
+-#define HOUJI_GPU_FILESYSTEM_GATE 1
+ #include "RootCommands.h"
++static unsigned probeCacheLineBytes() {
++  uint64_t ctr;
++  __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
++  return 4U << ((ctr >> 16) & 15);
++}
++static void probeDeviceBarrier() { __asm__ volatile("dsb sy" ::: "memory"); }
++#include "HoujiUfsCapacityNative.inc"
+ 
+ // Bring the live controller up for reading: map, SMMU pass-through for the UFS stream, take over
+ // the request list, wake the device from UFS-PowerDown and wait for LUN 0 to be ready.
+@@ -218,6 +231,10 @@
+   *why = "native UFS disabled in the RAM-only kernel";
+   return false;
+ }
++}
++
++extern "C" int houji26_ufs_capacity_from_handoff(const HoujiUfsCapacityHandoff *handoff, uint64_t *blocks) {
++  return runProbeCapacity(handoff, blocks);
+ }
+ 
+ #include "HoujiGptCheck.h"
+diff --git a/iokit/Kernel/houji-ufs-root/HoujiUfsReadQualification.h b/iokit/Kernel/houji-ufs-root/HoujiUfsReadQualification.h
+new file mode 100644
+--- /dev/null
++++ b/iokit/Kernel/houji-ufs-root/HoujiUfsReadQualification.h
+@@ -0,0 +1,118 @@
++// SPDX-License-Identifier: BSD-2-Clause-Patent
++#ifndef HOUJI_UFS_READ_QUALIFICATION_H
++#define HOUJI_UFS_READ_QUALIFICATION_H
++
++#include "ArmSmmu4KAudit.h"
++#include "ArmSmmu4KStreams.h"
++#include "RootTransportLayout.h"
++#include "TransferPoll.h"
++
++enum class HoujiUfsReadQualification {
++    Ready, CommandDenied, InvalidWindow, QueueUnavailable, StreamUnavailable, ContextUnavailable
++};
++
++namespace HoujiUfsProbe {
++constexpr uint8_t capacity[32] = {
++    1, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32,
++    0x9e, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 0,
++};
++}
++
++static inline bool houjiUfsDataCommandAllowed(const uint8_t *request, unsigned length,
++                                               unsigned direction, uint32_t transfer) {
++    if (!request || length != 32 || direction != 2 || transfer != 32) return false;
++    for (unsigned i = 0; i < length; ++i)
++        if (request[i] != HoujiUfsProbe::capacity[i]) return false;
++    return true;
++}
++
++static inline uint64_t houjiUfsCapacityBlocks(const uint8_t *response, unsigned bytes) {
++    if (!response || bytes != 32) return 0;
++    uint64_t last = 0;
++    for (unsigned i = 0; i < 8; ++i) last = (last << 8) | response[i];
++    const uint32_t blockBytes = uint32_t(response[8]) << 24 | uint32_t(response[9]) << 16 |
++                                uint32_t(response[10]) << 8 | response[11];
++    if (blockBytes != 4096 || last >= UINT64_MAX / 4096) return 0;
++    return last + 1;
++}
++
++struct HoujiUfsQueueIo {
++    void *cookie;
++    int (*read32)(void *, size_t, uint32_t *);
++};
++
++// Queue, DMA pool, context and tables remain owned and immutable while this
++// binding is used. The transport holds the queue lock until completion.
++struct HoujiUfsReadLease {
++    const HoujiUfsQueueIo *queue;
++    const ArmSmmu4KIo *smmu;
++    const ArmSmmu4KStreamState *stream;
++    const ArmSmmu4KContextConfig *context;
++    const ArmSmmu4KAuditConfig *audit;
++};
++
++static inline bool houjiUfsQueueMatches(const HoujiUfsQueueIo &io, uint64_t expectedBase, uint32_t expectedRun = 1) {
++    uint32_t caps, mode, enabled, ready, interrupt, interruptEnable, low, high;
++    uint32_t transfer, task, transferRun, taskRun, taskLow, taskHigh;
++    if (!io.read32 || io.read32(io.cookie, 0x00, &caps) ||
++        ((caps & (1U << 30)) &&
++         (io.read32(io.cookie, 0x300, &mode) || (mode & 1))))
++        return false;
++    return !io.read32(io.cookie, 0x34, &enabled) && (enabled & 1) &&
++        !io.read32(io.cookie, 0x30, &ready) && (ready & 0xf) == 0xf &&
++        !io.read32(io.cookie, 0x20, &interrupt) && !(interrupt & kUfsFatalStatus) &&
++        !io.read32(io.cookie, 0x24, &interruptEnable) && !interruptEnable &&
++        !io.read32(io.cookie, 0x58, &transfer) && !transfer &&
++        !io.read32(io.cookie, 0x78, &task) && !task &&
++        !io.read32(io.cookie, 0x60, &transferRun) && transferRun == expectedRun &&
++        !io.read32(io.cookie, 0x80, &taskRun) && !taskRun &&
++        !io.read32(io.cookie, 0x70, &taskLow) && !taskLow &&
++        !io.read32(io.cookie, 0x74, &taskHigh) && !taskHigh &&
++        !io.read32(io.cookie, 0x50, &low) && !io.read32(io.cookie, 0x54, &high) &&
++        (uint64_t(high) << 32 | low) == expectedBase;
++}
++
++// Called with an exclusive queue, stream, bank, ASID and table lease through
++// the eventual doorbell write. The physical table callback reads that pool.
++// This only observes a prepared controller and context.
++static inline HoujiUfsReadQualification houjiUfsQualifyDataReads(
++    const uint8_t *request, unsigned length, unsigned direction, uint32_t transfer,
++    const HoujiUfsQueueIo &queue, uint64_t dma,
++    const ArmSmmu4KIo &smmu, const ArmSmmu4KStreamState &stream,
++    const ArmSmmu4KContextConfig &context, const ArmSmmu4KAuditConfig &audit) {
++    if (!houjiUfsDataCommandAllowed(request, length, direction, transfer))
++        return HoujiUfsReadQualification::CommandDenied;
++    if (!dma || (dma & 4095) || !context.lower || context.upper ||
++        !audit.lower || !audit.lower->ranges || audit.lower->range_count != 1 || audit.upper)
++        return HoujiUfsReadQualification::InvalidWindow;
++    const ArmSmmu4KRange &range = audit.lower->ranges[0];
++    if (range.iova != dma || range.physical != dma || range.bytes != kDmaBytes ||
++        range.permissions != (ArmSmmu4KRead | ArmSmmu4KWrite))
++        return HoujiUfsReadQualification::InvalidWindow;
++    if (stream.count != 1 || stream.streams[0].sid != 0x60)
++        return HoujiUfsReadQualification::StreamUnavailable;
++
++    if (!houjiUfsQueueMatches(queue, dma))
++        return HoujiUfsReadQualification::QueueUnavailable;
++    ArmSmmu4KStreamResult routes;
++    if (ArmSmmu4KObserveStreams(&smmu, &stream, &context, &routes) != ArmSmmu4KSuccess)
++        return HoujiUfsReadQualification::StreamUnavailable;
++    ArmSmmu4KAuditResult mapping;
++    if (ArmSmmu4KObserveAuditedContext(&smmu, stream.bank, &context, &audit, &mapping) !=
++        ArmSmmu4KSuccess || !mapping.complete)
++        return HoujiUfsReadQualification::ContextUnavailable;
++    if (ArmSmmu4KObserveStreams(&smmu, &stream, &context, &routes) != ArmSmmu4KSuccess)
++        return HoujiUfsReadQualification::StreamUnavailable;
++    return houjiUfsQueueMatches(queue, dma) ? HoujiUfsReadQualification::Ready :
++           HoujiUfsReadQualification::QueueUnavailable;
++}
++
++static inline bool houjiUfsReadLeaseAllows(
++    const HoujiUfsReadLease *lease, uint64_t dma, const uint8_t *request,
++    unsigned direction, uint32_t transfer) {
++    return lease && lease->queue && lease->smmu && lease->stream && lease->context && lease->audit &&
++        houjiUfsQualifyDataReads(request, 32, direction, transfer, *lease->queue, dma, *lease->smmu,
++                                *lease->stream, *lease->context, *lease->audit) ==
++        HoujiUfsReadQualification::Ready;
++}
++#endif
+diff --git a/iokit/Kernel/houji-ufs-root/RootCommands.h b/iokit/Kernel/houji-ufs-root/RootCommands.h
+--- a/iokit/Kernel/houji-ufs-root/RootCommands.h
++++ b/iokit/Kernel/houji-ufs-root/RootCommands.h
+@@ -11,7 +11,14 @@
+ struct HardwareTransferPort {
+   uint64_t deadline;
+   uint32_t doorbell () { return read32 (gHost.hc, 0x58); }
+-  uint32_t interrupt () { return read32 (gHost.hc, 0x20); }
++  uint32_t interrupt () {
++    uint32_t status = read32(gHost.hc, 0x20);
++    // Both fault registers are sampled throughout DMA completion polling.
++    if (!gHost.smmu || !gHost.cb || read32(gHost.smmu, 0x48) ||
++        (read32(gHost.cb, 0x58) & 0xc00001feU))
++      status |= kUfsFatalStatus;
++    return status;
++  }
+   uint32_t completedOcs () {
+     cacheInvalidate (gHost.virt, 64);
+     return *reinterpret_cast<volatile uint32_t *> (gHost.virt + 8) & 0xff;
+@@ -33,12 +40,84 @@
+   return (uint32_t (at[0]) << 24) | (uint32_t (at[1]) << 16) | (uint32_t (at[2]) << 8) | at[3];
+ }
+ 
+-// No physical command can be submitted, even if called by an in-kernel client.
+-static IOReturn hostSubmit (__unused uint32_t direction, __unused uint32_t dataBytes,
+-                            __unused uint32_t timeoutUs, uint32_t *ocs)
++// Submit only the single qualified LUN0 READ CAPACITY(16) command.
++static IOReturn hostSubmit (uint32_t direction, uint32_t dataBytes, uint32_t timeoutUs, uint32_t *ocs)
+ {
+   *ocs = 15;
+-  return kIOReturnNotPermitted;
++  if (!gHost.virt || gHost.phaseACapacityIssued || !gHost.phaseAReadLease ||
++      !houjiUfsDataCommandAllowed(gHost.virt + kUcdOffset, 32, direction, dataBytes))
++    return kIOReturnNotPermitted;
++  if (!timeoutUs || dataBytes > kDataMax || (dataBytes & 3) ||
++      (dataBytes ? (direction != 1 && direction != 2) : direction != 0)) return kIOReturnBadArgument;
++  if (gHost.poisoned) return kIOReturnNotReady;
++  if (read32 (gHost.hc, 0x58) != 0) {
++    gHost.poisoned = true;
++    gHost.ready = false;
++    return recordTransport (kIOReturnBusy, *ocs);
++  }
++  if (read32 (gHost.hc, 0x20) & kUfsFatalStatus) {
++    gHost.poisoned = true;
++    gHost.ready = false;
++    return recordTransport (kIOReturnIOError, *ocs);
++  }
++  gRootDiagnostic.command++;
++  gRootDiagnostic.type = gHost.virt[kUcdOffset];
++  gRootDiagnostic.lun = gHost.virt[kUcdOffset + 2];
++  gRootDiagnostic.opcode = gHost.virt[kUcdOffset + (gRootDiagnostic.type == 1 ? 16 : 12)];
++  gRootDiagnostic.scsi = 0xffff;
++  gRootDiagnostic.response = 0;
++  gRootDiagnostic.protocol = 0;
++  gRootDiagnostic.residual = 0;
++  gRootDiagnostic.sense = 0;
++  uint8_t *utrd = gHost.virt;
++  uint64_t ucdPhys = gHost.phys + kUcdOffset;
++  uint32_t *words = reinterpret_cast<uint32_t *> (utrd);
++  for (unsigned index = 0; index < 8; index++) {
++    words[index] = 0;
++  }
++  words[0] = 0x10000000U | (direction << 25);
++  words[2] = 0x0fU;
++  words[4] = static_cast<uint32_t> (ucdPhys);
++  words[5] = static_cast<uint32_t> (ucdPhys >> 32);
++  words[6] = (512U >> 2) | ((kRspOffset >> 2) << 16);
++  words[7] = (dataBytes ? 1U : 0U) | ((kPrdtOffset >> 2) << 16);
++  if (dataBytes) {
++    uint64_t dataPhys = gHost.phys + kDataOffset;
++    uint32_t *prd = reinterpret_cast<uint32_t *> (gHost.virt + kUcdOffset + kPrdtOffset);
++    prd[0] = static_cast<uint32_t> (dataPhys);
++    prd[1] = static_cast<uint32_t> (dataPhys >> 32);
++    prd[2] = 0;
++    prd[3] = dataBytes - 1;
++  }
++  cacheCivac (gHost.virt, kDataOffset + dataBytes);
++  // Last qualification under the queue lock, just before the doorbell.
++  if (!houjiUfsReadLeaseAllows(gHost.phaseAReadLease, gHost.phys,
++                              gHost.virt + kUcdOffset, direction, dataBytes)) {
++    gHost.poisoned = true;
++    gHost.ready = false;
++    return kIOReturnNotReady;
++  }
++  gHost.phaseACapacityIssued = true;
++  hostWrite (0x20, 1);  // Acknowledge completion only; preserve error evidence.
++  HardwareTransferPort port;
++  clock_interval_to_deadline (timeoutUs, kMicrosecondScale, &port.deadline);
++  hostWrite (0x58, 1);
++  UfsTransferPoll state;
++  UfsTransferEnd end = pollUfsTransfer (port, state);
++  gRootDiagnostic.polls = state.polls;
++  gRootDiagnostic.dbSeen = state.doorbellSeen;
++  gRootDiagnostic.isSeen = state.interruptSeen;
++  *ocs = state.ocs;
++  if (end != UfsTransferEnd::Completed) {
++    // No cancel/reset/retry: the controller may still own the buffer, even
++    // with DB=0. Keep it allocated and prohibit all subsequent CPU writes.
++    gHost.poisoned = true;
++    gHost.ready = false;
++    return recordTransport (end == UfsTransferEnd::Timeout ? kIOReturnTimeout : kIOReturnIOError, *ocs);
++  }
++  cacheInvalidate (gHost.virt, kDataOffset + dataBytes);
++  gRootDiagnostic.response = loadBe32 (gHost.virt + kUcdOffset + kRspOffset);
++  return recordTransport (*ocs == 0 ? kIOReturnSuccess : kIOReturnIOError, *ocs);
+ }
+ 
+ static bool hostClearUcd (void)
+@@ -155,6 +234,22 @@
+   return hostScsiDir (lun, cdb, cdbLength, dataBytes ? 2U : 0U, dataBytes, timeoutUs, scsiStatus);
+ }
+ 
++static IOReturn hostReadProbeCapacity(uint64_t *blocks) {
++  if (!blocks || !gHost.ready || !gHost.virt || !gHost.lock || !gHost.phaseAReadLease)
++    return kIOReturnNotReady;
++  *blocks = 0;
++  IOLockLock(gHost.lock);
++  uint32_t scsi = 0;
++  IOReturn status = hostScsi(0, HoujiUfsProbe::capacity + 16, 16, true, 32, 1000000, &scsi);
++  if (status == kIOReturnSuccess) {
++    const uint64_t count = houjiUfsCapacityBlocks(gHost.virt + kDataOffset, 32);
++    if (!count) status = kIOReturnIOError;
++    else *blocks = count;
++  }
++  IOLockUnlock(gHost.lock);
++  return status;
++}
++
+ // Query read request (opcode 0x03 READ ATTRIBUTE / 0x05 READ FLAG). Returns the value field.
+ static IOReturn hostQueryRead (uint8_t opcode, uint8_t idn, uint32_t *value)
+ {
+diff --git a/iokit/Kernel/houji-ufs-root/RootTransportLayout.h b/iokit/Kernel/houji-ufs-root/RootTransportLayout.h
+--- a/iokit/Kernel/houji-ufs-root/RootTransportLayout.h
++++ b/iokit/Kernel/houji-ufs-root/RootTransportLayout.h
+@@ -1,4 +1,5 @@
+ // SPDX-License-Identifier: BSD-2-Clause-Patent
++#pragma once
+ enum : uint32_t {
+   kUcdOffset = 4096,
+   kRspOffset = 512,
+diff --git a/iokit/Kernel/houji-ufs-root/TransferPoll.h b/iokit/Kernel/houji-ufs-root/TransferPoll.h
+--- a/iokit/Kernel/houji-ufs-root/TransferPoll.h
++++ b/iokit/Kernel/houji-ufs-root/TransferPoll.h
+@@ -1,6 +1,7 @@
+ // SPDX-License-Identifier: BSD-2-Clause-Patent
+ // Single-slot completion policy. Port supplies ordered MMIO, invalidate-only
+ // descriptor reads, a monotonic deadline and bounded pacing. No resubmission.
++#pragma once
+ enum class UfsTransferEnd { Completed, Fatal, Timeout };
+ struct UfsTransferPoll {
+   uint32_t polls = 0, doorbellSeen = 0, interruptSeen = 0, ocs = 15;

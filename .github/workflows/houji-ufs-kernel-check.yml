@@ -1,0 +1,64 @@
+name: houji iPhone 23G90 UFS kernel link check
+
+on:
+  push:
+    branches:
+      - houji-ufs-kernel-check
+    paths:
+      - '.github/workflows/houji-ufs-kernel-check.yml'
+      - 'ci/houji-public-ram/ufs-capacity.patch'
+
+permissions:
+  contents: read
+
+jobs:
+  kernel:
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      HOUJI_PUBLIC_REVISION: 98bc0960f96076de8e8d16efcfb0c0603b166b85
+      HOUJI_JOBS: '6'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            ci/houji-public-ram/assemble.sh
+            ci/houji-public-ram/local.patch
+            ci/houji-public-ram/symbolsets.patch
+            ci/houji-public-ram/ufs-capacity.patch
+          sparse-checkout-cone-mode: false
+
+      - name: Prepare the pinned RAM sources and the capacity-only delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ci/houji-public-ram/assemble.sh
+          tree="$RUNNER_TEMP/houji-public-ram/xnu"
+          patch="$GITHUB_WORKSPACE/ci/houji-public-ram/ufs-capacity.patch"
+          shasum -a 256 "$patch"
+          git -C "$tree" apply --check "$patch"
+          git -C "$tree" apply "$patch"
+          grep -F 'iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp optional iokitcpp' "$tree/iokit/conf/files"
+
+      - name: Build and verify the arm64e HOUJI XNU kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="$RUNNER_TEMP/houji-public-ram"
+          export XNU_SRC="$base/xnu" XNU_ARCH=arm64e MACHINE=HOUJI RC_DARWIN_KERNEL_VERSION=25.6.0
+          sdk="$(xcrun --sdk macosx --show-sdk-path)"
+          cp "$sdk/System/Library/Frameworks/Kernel.framework/Headers/IOKit/hid/IOHIDUsageTables.h" \
+            "$XNU_SRC/iokit/Kernel/arm/hid/IOHIDUsageTables.h"
+          bash "$base/hakios/base/xnu-deps/setup.sh" --stage1
+          bash "$base/hakios/base/xnu-deps/setup.sh" --stage2
+          HOUJI_XNU="$XNU_SRC" HOUJI_REFERENCE="$base/hakios" \
+            bash "$base/houji/tools/build-ios26-kernel.sh" --ram-only
+          kernel="$XNU_SRC/BUILD/obj/mach.development.houji"
+          nm_log="$RUNNER_TEMP/houji-ufs-kernel-nm.txt"
+          xcrun nm "$kernel" > "$nm_log"
+          grep -E '[[:space:]][Tt][[:space:]]+_houji26_ufs_capacity_from_handoff$' "$nm_log"
+          wc -c "$kernel"
+          shasum -a 256 "$kernel"
+          echo "PASS: capacity-only entry linked in arm64e HOUJI XNU"
