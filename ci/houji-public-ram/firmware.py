@@ -4,18 +4,31 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 import urllib.request
 import zlib
-
 
 base = Path(os.environ["RUNNER_TEMP"]) / "houji-public-ram"
 firmware = base / "firmware"
 firmware.mkdir()
 revision = "07b822cc556d2053838a0687b62d1dca15cad9b6"
 upstream = f"https://kernel.googlesource.com/pub/scm/linux/kernel/git/firmware/linux-firmware/+/{revision}/qcom"
+
+
+def fetch(url):
+    last = None
+    for attempt in range(5):
+        try:
+            with urllib.request.urlopen(url, timeout=45) as response:
+                return response.read(200_000)
+        except Exception as error:  # transient 5xx from the public mirror
+            last = error
+            time.sleep(3 * (attempt + 1))
+    raise SystemExit(f"firmware download failed after retries: {url}: {last}")
+
+
 for name in ("gmu_gen70900.bin", "gen70900_aqe.fw"):
-    with urllib.request.urlopen(f"{upstream}/{name}?format=TEXT", timeout=30) as response:
-        (firmware / name).write_bytes(base64.b64decode(response.read(200_000), validate=True))
+    (firmware / name).write_bytes(base64.b64decode(fetch(f"{upstream}/{name}?format=TEXT"), validate=True))
 
 sqe = os.environ["HOUJI_SQE_A"] + os.environ["HOUJI_SQE_B"]
 if not os.environ["HOUJI_SQE_A"] or not os.environ["HOUJI_SQE_B"]:
