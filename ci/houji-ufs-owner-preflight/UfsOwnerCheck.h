@@ -12,6 +12,7 @@ typedef enum {
   HoujiOwnerReadFailed,
   HoujiOwnerLinkNotReady,
   HoujiOwnerMcq,
+  HoujiOwnerHciFault,
   HoujiOwnerQueueNotRetired,
   HoujiOwnerSmmuPolicyUnknown,
   HoujiOwnerSidMissingOrAmbiguous,
@@ -20,10 +21,38 @@ typedef enum {
   HoujiOwnerTranslationObserved
 } HOUJI_OWNER_RESULT;
 
+typedef enum {
+  HoujiQueueInterruptEnable,
+  HoujiQueueTransferDoorbell,
+  HoujiQueueTransferRun,
+  HoujiQueueTaskDoorbell,
+  HoujiQueueTaskRun,
+  HoujiQueueTransferBaseLow,
+  HoujiQueueTransferBaseHigh,
+  HoujiQueueTaskBaseLow,
+  HoujiQueueTaskBaseHigh,
+  HoujiQueueRegisterCount
+} HOUJI_OWNER_QUEUE_REGISTER;
+
+typedef struct {
+  UINT32 InterruptStatus;
+  UINT32 Queue[HoujiQueueRegisterCount];
+} HOUJI_OWNER_HCI_SNAPSHOT;
+
 STATIC HOUJI_OWNER_RESULT
-HoujiOwnerInspect (HOUJI_OWNER_READ Read, VOID *Context)
+HoujiOwnerInspect (HOUJI_OWNER_READ Read, VOID *Context, HOUJI_OWNER_HCI_SNAPSHOT *Hci)
 {
-  CONST UINT32 QueueRegisters[] = {0x24, 0x58, 0x60, 0x78, 0x80, 0x50, 0x54, 0x70, 0x74};
+  STATIC CONST UINT32 QueueRegisters[HoujiQueueRegisterCount] = {
+    [HoujiQueueInterruptEnable] = 0x24,
+    [HoujiQueueTransferDoorbell] = 0x58,
+    [HoujiQueueTransferRun] = 0x60,
+    [HoujiQueueTaskDoorbell] = 0x78,
+    [HoujiQueueTaskRun] = 0x80,
+    [HoujiQueueTransferBaseLow] = 0x50,
+    [HoujiQueueTransferBaseHigh] = 0x54,
+    [HoujiQueueTaskBaseLow] = 0x70,
+    [HoujiQueueTaskBaseHigh] = 0x74,
+  };
   UINT32 Caps, Value;
   if (!Read (Context, HOUJI_OWNER_HCI_BASE, &Caps) ||
       !Read (Context, HOUJI_OWNER_HCI_BASE + 0x34, &Value)) { return HoujiOwnerReadFailed; }
@@ -34,14 +63,18 @@ HoujiOwnerInspect (HOUJI_OWNER_READ Read, VOID *Context)
     if (!Read (Context, HOUJI_OWNER_HCI_BASE + 0x300, &Value)) { return HoujiOwnerReadFailed; }
     if (Value & 1U) { return HoujiOwnerMcq; }
   }
-  if (!Read (Context, HOUJI_OWNER_HCI_BASE + 0x20, &Value)) { return HoujiOwnerReadFailed; }
-  if (Value & 0x71880U) { return HoujiOwnerQueueNotRetired; }
+  if (!Read (Context, HOUJI_OWNER_HCI_BASE + 0x20, &Hci->InterruptStatus)) { return HoujiOwnerReadFailed; }
+  if (Hci->InterruptStatus & 0x71880U) { return HoujiOwnerHciFault; }
+  // Take one bounded snapshot of the legacy register set. If any queue
+  // state is inherited, stop before SMMU observation or command submission.
+  UINT32 QueueState = 0;
   for (UINTN Index = 0; Index < ARRAY_SIZE (QueueRegisters); Index++) {
-    if (!Read (Context, HOUJI_OWNER_HCI_BASE + QueueRegisters[Index], &Value)) {
+    if (!Read (Context, HOUJI_OWNER_HCI_BASE + QueueRegisters[Index], &Hci->Queue[Index])) {
       return HoujiOwnerReadFailed;
     }
-    if (Value != 0) { return HoujiOwnerQueueNotRetired; }
+    QueueState |= Hci->Queue[Index];
   }
+  if (QueueState != 0) { return HoujiOwnerQueueNotRetired; }
 
   UINT32 Id0, Id1;
   if (!Read (Context, HOUJI_OWNER_SMMU_BASE + 0x20, &Id0) ||

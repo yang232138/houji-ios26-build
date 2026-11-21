@@ -21,6 +21,38 @@ Say (CONST CHAR16 *Text)
   }
 }
 
+STATIC VOID
+SayHex (CONST CHAR16 *Label, UINT32 Value)
+{
+  STATIC CONST CHAR16 Hex[] = L"0123456789ABCDEF";
+  CHAR16 Digits[9];
+  for (UINTN Index = 0; Index < 8; Index++) {
+    Digits[Index] = Hex[(Value >> (28U - 4U * Index)) & 0xFU];
+  }
+  Digits[8] = 0;
+  Say (Label);
+  Say (Digits);
+}
+
+STATIC VOID
+ShowQueueSnapshot (CONST HOUJI_OWNER_HCI_SNAPSHOT *Hci)
+{
+  SayHex (L" IS=", Hci->InterruptStatus);
+  SayHex (L"  IE=", Hci->Queue[HoujiQueueInterruptEnable]);
+  Say (L"\r\n");
+  SayHex (L" TR DB=", Hci->Queue[HoujiQueueTransferDoorbell]);
+  SayHex (L"  RUN=", Hci->Queue[HoujiQueueTransferRun]);
+  Say (L"\r\n");
+  SayHex (L" TM DB=", Hci->Queue[HoujiQueueTaskDoorbell]);
+  SayHex (L"  RUN=", Hci->Queue[HoujiQueueTaskRun]);
+  Say (L"\r\n");
+  // Report whether each base is populated without printing DMA addresses.
+  Say ((Hci->Queue[HoujiQueueTransferBaseLow] | Hci->Queue[HoujiQueueTransferBaseHigh]) ?
+    L" TR BASE=SET" : L" TR BASE=ZERO");
+  Say ((Hci->Queue[HoujiQueueTaskBaseLow] | Hci->Queue[HoujiQueueTaskBaseHigh]) ?
+    L"  TM BASE=SET\r\n" : L"  TM BASE=ZERO\r\n");
+}
+
 STATIC VOID __attribute__((noreturn))
 Stop (VOID)
 {
@@ -124,7 +156,8 @@ UniXNUApplicationEntry (EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     Say (L"STOP: guarded MMIO unavailable\r\n");
     Stop ();
   }
-  HOUJI_OWNER_RESULT Result = HoujiOwnerInspect (ReadRegister, NULL);
+  HOUJI_OWNER_HCI_SNAPSHOT Hci;
+  HOUJI_OWNER_RESULT Result = HoujiOwnerInspect (ReadRegister, NULL, &Hci);
   if (EFI_ERROR (Cpu->RegisterInterruptHandler (Cpu, EXCEPT_AARCH64_SYNCHRONOUS_EXCEPTIONS, NULL))) {
     Say (L"STOP: restore firmware exception handler\r\n");
     Stop ();
@@ -134,6 +167,7 @@ UniXNUApplicationEntry (EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     [HoujiOwnerReadFailed] = L"STOP: guarded register read failed\r\n",
     [HoujiOwnerLinkNotReady] = L"STOP: HCI or link not ready\r\n",
     [HoujiOwnerMcq] = L"STOP: MCQ active\r\n",
+    [HoujiOwnerHciFault] = L"STOP: HCI error status\r\n",
     [HoujiOwnerQueueNotRetired] = L"STOP: legacy queues not clean and stopped\r\n",
     [HoujiOwnerSmmuPolicyUnknown] = L"STOP: SMMU policy or fault\r\n",
     [HoujiOwnerSidMissingOrAmbiguous] = L"STOP: SID 0x60 missing or ambiguous\r\n",
@@ -142,6 +176,12 @@ UniXNUApplicationEntry (EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     [HoujiOwnerTranslationObserved] = L"OBSERVED: queues idle, SID 0x60 translating, ownership unproven\r\n",
   };
   Say (Message[Result]);
+  if (Result == HoujiOwnerQueueNotRetired) {
+    ShowQueueSnapshot (&Hci);
+  } else if (Result == HoujiOwnerHciFault) {
+    SayHex (L" IS=", Hci.InterruptStatus);
+    Say (L"\r\n");
+  }
   Say (L"UFS PREFLIGHT END - NO STORAGE COMMAND\r\n");
   Stop ();
 }
