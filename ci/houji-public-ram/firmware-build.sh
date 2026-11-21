@@ -48,6 +48,11 @@ for name, pin in pins.items():
                     ignore=shutil.ignore_patterns(".git"))
 PY
 git -C "$base/uefi/Mu_Basecore" apply "$base/houji/uefi/patches/Mu_Basecore.patch"
+# The pinned Mu_Basecore patch includes the public houji CP-page policy header
+# through a relative path; place the repository's own header where it resolves.
+cp "$base/houji/archive/native/gpu/uefi/HoujiCpDeviceNgNrePolicy.h" \
+   "$base/uefi/Mu_Basecore/UefiCpuPkg/Library/ArmMmuLib/HoujiCpDeviceNgNrePolicy.h"
+test -f "$base/uefi/Mu_Basecore/UefiCpuPkg/Library/ArmMmuLib/HoujiCpDeviceNgNrePolicy.h"
 
 # Boot manager and DarwinBoot overlays come from the pinned public profile.
 python3 "$base/houji/tools/prepare-ios26-sources.py" boot_manager \
