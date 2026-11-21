@@ -71,7 +71,17 @@ assert hashlib.sha256(base_adt.read_bytes()).hexdigest() == \
 vendor = base / "vendor"
 vendor.mkdir()
 with zipfile.ZipFile(vendor_zip) as archive:
-    archive.extractall(vendor)
+    for info in archive.infolist():
+        name = info.filename.replace("\\", "/").lstrip("/")
+        if not name or name.startswith("../"):
+            continue
+        target = vendor / name
+        if info.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(archive.read(info))
+print("vendor entries:", sorted(str(item.relative_to(vendor)) for item in vendor.rglob("*")))
 if not (vendor / "HoujiVendorPkg/EnvDxeEnhanced/EnvDxeEnhanced.inf").is_file():
     raise SystemExit("vendor bundle lacks the OEM EnvDxeEnhanced module")
 shutil.copyfile(base_adt, base / "base.adt")
