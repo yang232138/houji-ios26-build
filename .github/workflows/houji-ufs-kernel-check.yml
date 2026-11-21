@@ -29,6 +29,7 @@ jobs:
             ci/houji-public-ram/local.patch
             ci/houji-public-ram/symbolsets.patch
             ci/houji-public-ram/ufs-capacity.patch
+            ci/houji-public-ram/verify-kernel-capacity.py
           sparse-checkout-cone-mode: false
 
       - name: Prepare the pinned RAM sources and the capacity-only delta
@@ -66,9 +67,5 @@ jobs:
           HOUJI_XNU="$XNU_SRC" HOUJI_REFERENCE="$base/hakios" \
             bash "$base/houji/tools/build-ios26-kernel.sh" --ram-only
           kernel="$XNU_SRC/BUILD/obj/mach.development.houji"
-          nm_log="$RUNNER_TEMP/houji-ufs-kernel-nm.txt"
-          xcrun nm "$kernel" > "$nm_log"
-          grep -E '[[:space:]][Tt][[:space:]]+_houji26_ufs_capacity_from_handoff$' "$nm_log"
-          wc -c "$kernel"
-          shasum -a 256 "$kernel"
+          python3 ci/houji-public-ram/verify-kernel-capacity.py "$kernel"
           echo "PASS: capacity-only entry linked in arm64e HOUJI XNU"
