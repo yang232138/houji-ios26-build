@@ -85,3 +85,45 @@ jobs:
           name: houji-public-23g90-ram-kernel-evidence
           path: evidence
           if-no-files-found: error
+
+  firmware:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    env:
+      HOUJI_PUBLIC_REVISION: 98bc0960f96076de8e8d16efcfb0c0603b166b85
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned build tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            clang llvm lld make gcc uuid-dev nasm acpica-tools mtools python3-venv
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" -q install cryptography==50.0.2
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: houji-public-23g90-ram-kernel-evidence
+          path: out/kernel-evidence
+
+      - name: Build UEFI, DarwinBoot and the RAM payload
+        env:
+          HOUJI_BASE_ADT: ${{ secrets.HOUJI_PUBLIC_RAM_BASE_ADT }}
+          HOUJI_VENDOR_BUNDLE: ${{ secrets.HOUJI_PUBLIC_RAM_VENDOR }}
+          HOUJI_ARTIFACT_KEY: ${{ secrets.HOUJI_PUBLIC_RAM_ARTIFACT_KEY }}
+        run: |
+          set -euo pipefail
+          bash ci/houji-public-ram/firmware-build.sh 2>&1 | tee out/firmware-build.log
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: houji-public-23g90-firmware-evidence
+          path: out/
+          if-no-files-found: warn
