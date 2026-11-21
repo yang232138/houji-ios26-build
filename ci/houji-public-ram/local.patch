@@ -562,3 +562,61 @@ index 034e551..50a4a91 100644
  
  
  if __name__ == '__main__':
+
+diff --git a/kernel/overlay/iokit/Kernel/arm/SweetFramebuffer.cpp b/kernel/overlay/iokit/Kernel/arm/SweetFramebuffer.cpp
+index aa02e43..f381e4f 100644
+--- a/kernel/overlay/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/kernel/overlay/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -74,6 +74,43 @@ enum {
+ #define SWEET_FB_DOT_PITCH              458     /* iPhone X logical canvas */
+ #define HOUJI_LOGICAL_W 1200
+ #define HOUJI_LOGICAL_H 2670
++
++/* White Apple boot mark. Drawn once into the inherited boot framebuffer
++ * before the display stack is published; the text console keeps drawing
++ * afterwards, so this is a short visual checkpoint, not a GUI. */
++static void houjiDrawWhiteApple(uintptr_t pixels, uint32_t width, uint32_t height,
++    uint32_t rowBytes) {
++    if (!pixels || width < 256 || height < 256 || rowBytes < width * 4) return;
++    const int32_t cx = (int32_t)(width / 2);
++    const int32_t cy = (int32_t)((uint64_t)height * 42 / 100);
++    const int32_t r = (int32_t)(width / 5);
++    const int32_t leftX = cx - r * 52 / 100;
++    const int32_t rightX = cx + r * 52 / 100;
++    const int32_t bodyY = cy + r * 18 / 100;
++    const int32_t lowerY = bodyY + r * 38 / 100;
++    const int32_t notchY = cy - r * 62 / 100;
++    const int32_t notchR = r * 66 / 100;
++    for (int32_t y = cy - r; y <= cy + (r * 13) / 10; y++) {
++        if (y < 0 || y >= (int32_t)height) continue;
++        for (int32_t x = cx - (r * 17) / 10; x <= cx + (r * 17) / 10; x++) {
++            if (x < 0 || x >= (int32_t)width) continue;
++            int32_t dx, dy;
++            bool inside = false;
++            dx = x - leftX; dy = y - bodyY;
++            if ((int64_t)dx * dx + (int64_t)dy * dy <= (int64_t)r * r) inside = true;
++            dx = x - rightX; dy = y - bodyY;
++            if ((int64_t)dx * dx + (int64_t)dy * dy <= (int64_t)r * r) inside = true;
++            dx = x - cx; dy = y - lowerY;
++            if ((int64_t)dx * dx + (int64_t)dy * dy <= (int64_t)r * r) inside = true;
++            dx = x - cx; dy = y - notchY;
++            if ((int64_t)dx * dx + (int64_t)dy * dy <= (int64_t)notchR * notchR) inside = false;
++            if (!inside) continue;
++            uint32_t *p = (uint32_t *)(pixels + (uintptr_t)y * rowBytes + (uintptr_t)x * 4);
++            *p = 0xFFFFFFFFu;
++        }
++    }
++    __asm__ volatile("dsb sy" ::: "memory");
++}
+ static uint64_t houji_fb_copy_bytes, houji_fb_present_ticks, houji_fb_max_present_ticks;
+ static uint64_t houji_fb_missed_timer_ticks;
+ static uint64_t houji_fb_callbacks,houji_fb_due_ticks;
+@@ -378,6 +415,8 @@ AppleCLCD::start(IOService *provider)
+ 		return false;
+ 	}
+ 	fCopyEvent->enable();
++	houjiDrawWhiteApple(fPixels, fWidth, fHeight, fRowBytes);
++	IOSleep(1200);
+ 	PE_parse_boot_argn("houji_fb_gpu_sync",&fGpuSync,sizeof(fGpuSync));
+ 	PE_parse_boot_argn("houji_fb_gpu_cache",&fGpuCache,sizeof(fGpuCache));
+ 	uint64_t ctr=0;__asm__ volatile("mrs %0, ctr_el0":"=r"(ctr));
