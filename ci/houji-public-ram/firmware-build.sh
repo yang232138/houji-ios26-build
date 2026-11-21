@@ -66,6 +66,16 @@ with zipfile.ZipFile(io.BytesIO(base64.b64decode(os.environ["HOUJI_VENDOR_BUNDLE
     archive.extractall(vendor)
 (base / "base.adt").write_bytes(base64.b64decode(os.environ["HOUJI_BASE_ADT"], validate=True))
 PY
+# EDK2 only registers a package root that carries a .dec; the OEM bundle only
+# ships the binary module, so describe the package it already lives in.
+cat > "$base/vendor/HoujiVendorPkg/HoujiVendorPkg.dec" <<'EOF'
+[Defines]
+  DEC_SPECIFICATION = 0x00010005
+  PACKAGE_NAME      = HoujiVendorPkg
+  PACKAGE_GUID      = 5B0F3D2A-6C1E-4A7B-9D8C-2F4E6A1B7C30
+  PACKAGE_VERSION   = 1.0
+EOF
+test -f "$base/vendor/HoujiVendorPkg/EnvDxeEnhanced/EnvDxeEnhanced.inf"
 
 # Project Mu basetools (pinned by the public build documentation).
 curl -fsSL --retry 2 \
