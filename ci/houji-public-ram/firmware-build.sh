@@ -17,6 +17,7 @@ fetch() {
 }
 
 fetch houji lonzzi/UniXNU-houji "$HOUJI_PUBLIC_REVISION"
+git -C "$base/houji" apply --index "$GITHUB_WORKSPACE/ci/houji-public-ram/local.patch"
 fetch mu Project-Silicium/Mu-Silicium 42fe563791e51bf5500c2e470ed294ca0c94b97c
 fetch unixnu UniXNU/UniXNU 79d81c10220caebb15da5737a4eb6c20724cc731
 fetch darwinboot UniXNU/DarwinBoot 85332b317ee80898fc78939ea64e6ca52d3837a3
