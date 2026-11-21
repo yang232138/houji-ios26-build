@@ -564,32 +564,48 @@ index 034e551..50a4a91 100644
  if __name__ == '__main__':
 
 diff --git a/kernel/overlay/iokit/Kernel/arm/SweetFramebuffer.cpp b/kernel/overlay/iokit/Kernel/arm/SweetFramebuffer.cpp
-index aa02e43..f381e4f 100644
+index aa02e43..b8600cb 100644
 --- a/kernel/overlay/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/kernel/overlay/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -74,6 +74,43 @@ enum {
+@@ -74,6 +74,62 @@ enum {
  #define SWEET_FB_DOT_PITCH              458     /* iPhone X logical canvas */
  #define HOUJI_LOGICAL_W 1200
  #define HOUJI_LOGICAL_H 2670
 +
-+/* White Apple boot mark. Drawn once into the inherited boot framebuffer
-+ * before the display stack is published; the text console keeps drawing
-+ * afterwards, so this is a short visual checkpoint, not a GUI. */
++/* White Apple boot mark, drawn into a blacked-out box in the middle of the
++ * inherited boot framebuffer. The text console keeps its own cursor outside
++ * the box, so the mark stays readable long enough to be photographed. */
 +static void houjiDrawWhiteApple(uintptr_t pixels, uint32_t width, uint32_t height,
 +    uint32_t rowBytes) {
 +    if (!pixels || width < 256 || height < 256 || rowBytes < width * 4) return;
 +    const int32_t cx = (int32_t)(width / 2);
 +    const int32_t cy = (int32_t)((uint64_t)height * 42 / 100);
-+    const int32_t r = (int32_t)(width / 5);
++    const int32_t r = (int32_t)(width / 4);
++    const int32_t boxX0 = cx - (r * 17) / 10;
++    const int32_t boxX1 = cx + (r * 17) / 10;
++    const int32_t boxY0 = cy - (r * 13) / 10;
++    const int32_t boxY1 = cy + (r * 13) / 10;
++    for (int32_t y = boxY0; y <= boxY1; y++) {
++        if (y < 0 || y >= (int32_t)height) continue;
++        uint32_t *row = (uint32_t *)(pixels + (uintptr_t)y * rowBytes);
++        for (int32_t x = boxX0; x <= boxX1; x++) {
++            if (x < 0 || x >= (int32_t)width) continue;
++            row[x] = 0xFF000000u;
++        }
++    }
 +    const int32_t leftX = cx - r * 52 / 100;
 +    const int32_t rightX = cx + r * 52 / 100;
 +    const int32_t bodyY = cy + r * 18 / 100;
 +    const int32_t lowerY = bodyY + r * 38 / 100;
 +    const int32_t notchY = cy - r * 62 / 100;
 +    const int32_t notchR = r * 66 / 100;
-+    for (int32_t y = cy - r; y <= cy + (r * 13) / 10; y++) {
++    const int32_t leafX = cx + r * 38 / 100;
++    const int32_t leafY = cy - r * 106 / 100;
++    const int32_t leafRX = r * 30 / 100;
++    const int32_t leafRY = r * 46 / 100;
++    for (int32_t y = boxY0; y <= boxY1; y++) {
 +        if (y < 0 || y >= (int32_t)height) continue;
-+        for (int32_t x = cx - (r * 17) / 10; x <= cx + (r * 17) / 10; x++) {
++        for (int32_t x = boxX0; x <= boxX1; x++) {
 +            if (x < 0 || x >= (int32_t)width) continue;
 +            int32_t dx, dy;
 +            bool inside = false;
@@ -601,6 +617,9 @@ index aa02e43..f381e4f 100644
 +            if ((int64_t)dx * dx + (int64_t)dy * dy <= (int64_t)r * r) inside = true;
 +            dx = x - cx; dy = y - notchY;
 +            if ((int64_t)dx * dx + (int64_t)dy * dy <= (int64_t)notchR * notchR) inside = false;
++            dx = x - leafX; dy = y - leafY;
++            if ((int64_t)dx * dx * leafRY * leafRY + (int64_t)dy * dy * leafRX * leafRX
++                <= (int64_t)leafRX * leafRX * leafRY * leafRY) inside = true;
 +            if (!inside) continue;
 +            uint32_t *p = (uint32_t *)(pixels + (uintptr_t)y * rowBytes + (uintptr_t)x * 4);
 +            *p = 0xFFFFFFFFu;
@@ -611,12 +630,12 @@ index aa02e43..f381e4f 100644
  static uint64_t houji_fb_copy_bytes, houji_fb_present_ticks, houji_fb_max_present_ticks;
  static uint64_t houji_fb_missed_timer_ticks;
  static uint64_t houji_fb_callbacks,houji_fb_due_ticks;
-@@ -378,6 +415,8 @@ AppleCLCD::start(IOService *provider)
+@@ -378,6 +434,8 @@ AppleCLCD::start(IOService *provider)
  		return false;
  	}
  	fCopyEvent->enable();
 +	houjiDrawWhiteApple(fPixels, fWidth, fHeight, fRowBytes);
-+	IOSleep(1200);
++	IOSleep(3000);
  	PE_parse_boot_argn("houji_fb_gpu_sync",&fGpuSync,sizeof(fGpuSync));
  	PE_parse_boot_argn("houji_fb_gpu_cache",&fGpuCache,sizeof(fGpuCache));
  	uint64_t ctr=0;__asm__ volatile("mrs %0, ctr_el0":"=r"(ctr));
