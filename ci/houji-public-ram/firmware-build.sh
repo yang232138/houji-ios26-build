@@ -196,6 +196,13 @@ python3 "$base/houji/tools/make-ios26-first-entry.py" --inputs "$base/inputs" \
     --output "$base/payload.img"
 test -s "$base/payload.img"
 
+# Force native root before the CRC is bound into HoujiRamDiskDxe.
+mcopy -o -i "$base/payload.img" ::/EFI/UniXNU/unixnu.toml "$RUNNER_TEMP/unixnu.toml"
+sed -i 's/houji_native_root=0/houji_native_root=1/' "$RUNNER_TEMP/unixnu.toml"
+sed -i 's/houji_trial_seconds=90/houji_trial_seconds=300/' "$RUNNER_TEMP/unixnu.toml"
+mcopy -o -i "$base/payload.img" "$RUNNER_TEMP/unixnu.toml" ::/EFI/UniXNU/unixnu.toml
+grep -q 'houji_native_root=1' "$RUNNER_TEMP/unixnu.toml"
+
 # Pass two: bind the exact payload CRC into HoujiRamDiskDxe and build the FD.
 python3 "$GITHUB_WORKSPACE/ci/houji-public-ram/stage-ram-payload.py" \
     --payload "$base/payload.img" --uefi "$base/uefi"
