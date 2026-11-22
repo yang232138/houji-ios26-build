@@ -665,3 +665,19 @@ index 582ac30..e656183 100644
 +   for (Attempt = 0; Attempt < 3; Attempt++) {
 +     MapSize = Capacity;
 +     Status = gBS->GetMemoryMap (&MapSize, Map, &Key, &Stride, &Version);
+diff --git a/kernel/ios26/overlay/bsd/sys/HoujiRootFs26.h b/kernel/ios26/overlay/bsd/sys/HoujiRootFs26.h
+index 047c8cc..a6baa55 100644
+--- a/kernel/ios26/overlay/bsd/sys/HoujiRootFs26.h
++++ b/kernel/ios26/overlay/bsd/sys/HoujiRootFs26.h
+@@ -2,8 +2,9 @@
+ #ifndef HOUJI_ROOT_FS26_H
+ #define HOUJI_ROOT_FS26_H
+ /* The native device is a qualified HFSX volume. Mockfs accepts any device
+- * and would expose that whole volume as its single executable. */
++ * and would expose that whole volume as its single executable, so it must not
++ * win the RAM-root race: only sweet_hfs may claim the RAM disk. */
+ static inline int hjrfs26_candidate(int native_root,const char *name) {
+- return native_root!=1 || (name && name[0]=='h' && name[1]=='f' && name[2]=='s' && name[3]==0);
++ return name && name[0]=='h' && name[1]=='f' && name[2]=='s' && name[3]==0;
+ }
+ #endif
