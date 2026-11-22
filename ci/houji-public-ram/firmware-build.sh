@@ -179,25 +179,19 @@ path.write_bytes(blob)
 print("darwinboot-memory-size -> 0x18000000 (fits the reported UEFI free window)")
 PY
 cp "$darwinboot" "$base/inputs/DarwinBoot.efi"
-# Build a raw HFS RAM root with the real launchd and use it as the initrd.
-# The kernel mounts this volume through sweet_hfs instead of mockfs.
+# Build a raw HFS RAM root with the real launchd plus dyld, libSystem and
+# the Swift runtime split out of the Cryptex shared cache.
 mkdir -p "$base/mnt"
-python3 - "$base" <<'PY'
-import base64, os, sys
-from pathlib import Path
-base = Path(sys.argv[1])
-src = Path(os.environ['GITHUB_WORKSPACE'], 'ci/houji-public-ram/launchd.b64')
-(base / 'inputs').mkdir(exist_ok=True)
-(base / 'inputs/launchd').write_bytes(base64.b64decode(src.read_text()))
-PY
-dd if=/dev/zero of="$base/root.img" bs=1M count=16 status=none
+cp "$RUNNER_TEMP/rootfs-libs.tar.gz" "$base/inputs/rootfs-libs.tar.gz"
+dd if=/dev/zero of="$base/root.img" bs=1M count=200 status=none
 mkfs.hfsplus -v HOUJI26 "$base/root.img"
 sudo mount -o loop "$base/root.img" "$base/mnt"
-sudo mkdir -p "$base/mnt/sbin" "$base/mnt/dev" "$base/mnt/System/Library" "$base/mnt/private/tmp"
-sudo cp "$base/inputs/launchd" "$base/mnt/sbin/launchd"
+sudo mkdir -p "$base/mnt/sbin" "$base/mnt/usr/lib/system" "$base/mnt/usr/lib/swift" "$base/mnt/dev" "$base/mnt/System/Library" "$base/mnt/private/tmp"
+sudo tar -xzf "$base/inputs/rootfs-libs.tar.gz" -C "$base/mnt"
 sudo chmod 755 "$base/mnt/sbin/launchd"
 sudo umount "$base/mnt"
 cp "$base/root.img" "$base/inputs/hello.macho"
+ls -l "$base/inputs/hello.macho"
 python3 "$base/houji/tools/make-ios26-first-entry.py" --inputs "$base/inputs" \
     --output "$base/payload.img"
 test -s "$base/payload.img"
