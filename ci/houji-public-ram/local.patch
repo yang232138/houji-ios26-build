@@ -682,10 +682,10 @@ index 047c8cc..a6baa55 100644
  }
  #endif
 diff --git a/tools/make-ios26-first-entry.py b/tools/make-ios26-first-entry.py
-index 818ccbb..0ba96be 100644
+index 818ccbb..83b2768 100644
 --- a/tools/make-ios26-first-entry.py
 +++ b/tools/make-ios26-first-entry.py
-@@ -83,14 +83,18 @@ def main():
+@@ -83,9 +83,13 @@ def main():
      if not all(token in a.boot_args.split() for token in ('cpus=1', 'rd=md0', 'houji_native_root=0', 'houji_return_recovery=1')) or 'houji_gpu_' in a.boot_args:
          raise ValueError('First-entry profile must be one CPU, RAM root, bounded recovery, no GPU')
      hello = (a.inputs / 'hello.macho').read_bytes()
@@ -702,9 +702,3 @@ index 818ccbb..0ba96be 100644
      config = first_entry_config(a.boot_args)
      a.output.parent.mkdir(parents=True, exist_ok=True)
      with a.output.open('xb') as f:
-         os.chmod(a.output, 0o600)
--        f.truncate(64 * 1024 * 1024)
-+        f.truncate(192 * 1024 * 1024)
-     def run(tool, *args):
-         subprocess.run([tool, '-i', str(a.output), *map(str, args)], check=True)
-     run('mformat', '-F', '-v', 'HOUJIESP', '-N', '0x484f554a', '::')
