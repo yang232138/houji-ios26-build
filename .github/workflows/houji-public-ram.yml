@@ -57,23 +57,6 @@ jobs:
             2>&1 | tee evidence/pid1.log
           cp "$base/hello.json" evidence/pid1.json
 
-      - name: Build the HFS RAM root carrying the real launchd
-        shell: bash
-        run: |
-          set -euo pipefail
-          base="$RUNNER_TEMP/houji-public-ram"
-          mkdir -p "$base/rootfs/sbin" "$base/rootfs/dev" "$base/rootfs/System/Library" "$base/rootfs/private/tmp" "$base/mnt"
-          python3 -c "import base64;open(r'$base/rootfs/sbin/launchd','wb').write(base64.b64decode(open('ci/houji-public-ram/launchd.b64').read()))"
-          chmod 755 "$base/rootfs/sbin/launchd"
-          mkfile 16m "$base/root.img"
-          newfs_hfs -v HOUJI26 "$base/root.img"
-          hdiutil attach -imagekey diskimage-class=CRawDiskImage -mountpoint "$base/mnt" "$base/root.img"
-          ls -la "$base/mnt"
-          cp -R "$base/rootfs/." "$base/mnt/"
-          hdiutil detach "$base/mnt"
-          cp "$base/root.img" evidence/root.img
-          ls -l evidence/root.img
-          python3 -c "d=open('evidence/root.img','rb').read(); print('HFS sig at 1024:', d[1024:1028])"
       - name: Hash and encrypt compiled binaries
         shell: bash
         env:
@@ -119,7 +102,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            clang llvm lld make gcc uuid-dev nasm acpica-tools mtools python3-venv
+            clang llvm lld make gcc uuid-dev nasm acpica-tools mtools python3-venv hfsprogs
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" -q install cryptography==50.0.2
           echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
