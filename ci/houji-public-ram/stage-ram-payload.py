@@ -15,7 +15,7 @@ def main():
     data = a.payload.read_bytes()
     metadata = json.loads(a.payload.with_suffix('.json').read_text())
     digest = hashlib.sha256(data).hexdigest()
-    if len(data) != 0x4000000 or metadata['sha256'] != digest:
+    if len(data) not in (0x4000000, 0xC000000) or metadata['sha256'] != digest:
         raise ValueError('Payload size/hash differs from its build record')
     if data[71:90] != b'HOUJIESP   FAT32   ':
         raise ValueError('Not the houji FAT RAM payload')
