@@ -172,11 +172,11 @@ sys.path.insert(0, str(base / "houji/tools"))
 from ios26_adt import parse, serialize
 path = base / "inputs/houji.adt"
 tree = parse(path.read_bytes())
-tree.child("chosen").set("darwinboot-memory-size", struct.pack("<Q", 0x18000000))
+tree.child("chosen").set("darwinboot-memory-size", struct.pack("<Q", 0x15000000))
 blob = serialize(tree)
 assert serialize(parse(blob)) == blob
 path.write_bytes(blob)
-print("darwinboot-memory-size -> 0x18000000 (fits the reported UEFI free window)")
+print("darwinboot-memory-size -> 0x15000000 (fits the reported UEFI free window)")
 PY
 cp "$darwinboot" "$base/inputs/DarwinBoot.efi"
 # Build a raw HFS RAM root with the real launchd plus dyld, libSystem and
