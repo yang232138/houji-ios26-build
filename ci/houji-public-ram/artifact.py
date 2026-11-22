@@ -11,7 +11,12 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
 base = Path(os.environ["RUNNER_TEMP"]) / "houji-public-ram"
-paths = [base / "xnu/BUILD/obj/mach.development.houji", base / "hello.macho"]
+native = bool(os.environ.get("HOUJI_NATIVE_VOLUME"))
+paths = [base / "xnu/BUILD/obj/mach.development.houji"]
+if native:
+    paths.append(base / "native-trial-id")
+else:
+    paths.append(base / "hello.macho")
 hashes = {}
 archive = io.BytesIO()
 with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zipped:
@@ -22,12 +27,13 @@ with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zipped:
 
 nonce = secrets.token_bytes(12)
 key = bytes.fromhex(os.environ["HOUJI_ARTIFACT_SECRET"])
-sealed = nonce + AESGCM(key).encrypt(nonce, archive.getvalue(), b"houji-public-23g90-ram-v1")
+aad = b"houji-23g90-native-root-offline-v1" if native else b"houji-public-23g90-ram-v1"
+sealed = nonce + AESGCM(key).encrypt(nonce, archive.getvalue(), aad)
 Path("evidence/compiled.zip.aesgcm").write_bytes(sealed)
 report = {
     "workflow_commit": os.environ["GITHUB_SHA"],
     "public_commit": os.environ["HOUJI_PUBLIC_REVISION"],
-    "scope": "linked RAM-only XNU and static PID1",
+    "scope": "linked native-root XNU (offline only)" if native else "linked RAM-only XNU and static PID1",
     "firmware_image_built": False,
     "physical_device_accessed": False,
     "files": hashes,

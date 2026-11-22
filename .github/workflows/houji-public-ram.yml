@@ -1,4 +1,4 @@
-name: houji public iPhone 23G90 RAM kernel
+name: houji iPhone 23G90 kernel and firmware
 
 on:
   push:
@@ -7,6 +7,16 @@ on:
       - '.github/workflows/houji-public-ram.yml'
       - 'ci/houji-public-ram/**'
   workflow_dispatch:
+    inputs:
+      native_volume:
+        description: Read-only HFSX identity record for offline native root
+        type: string
+        required: false
+
+run-name: houji 23G90 ${{ inputs.native_volume != '' && 'native-root-offline' || 'RAM-only' }}
+
+env:
+  HOUJI_NATIVE_VOLUME_JSON: ${{ inputs.native_volume }}
 
 permissions:
   contents: read
@@ -29,6 +39,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p evidence
+          if [[ -n "$HOUJI_NATIVE_VOLUME_JSON" ]]; then
+            export HOUJI_NATIVE_VOLUME="$RUNNER_TEMP/native-volume.json"
+            printf '%s\n' "$HOUJI_NATIVE_VOLUME_JSON" > "$HOUJI_NATIVE_VOLUME"
+            echo "HOUJI_NATIVE_VOLUME=$HOUJI_NATIVE_VOLUME" >> "$GITHUB_ENV"
+          fi
           bash ci/houji-public-ram/assemble.sh 2>&1 | tee evidence/assemble.log
 
       - name: Verify the board firmware inputs
@@ -40,7 +55,17 @@ jobs:
           set -euo pipefail
           python3 ci/houji-public-ram/firmware.py 2>&1 | tee evidence/firmware.log
 
+      - name: Compile and verify the native-root arm64e kernel (offline)
+        if: inputs.native_volume != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="$RUNNER_TEMP/houji-public-ram"
+          HOUJI_XNU="$base/xnu" HOUJI_REFERENCE="$base/hakios" \
+            bash ci/houji-public-ram/build-native-kernel.sh 2>&1 | tee evidence/kernel.log
+
       - name: Compile and verify the RAM-only arm64e kernel and PID1
+        if: inputs.native_volume == ''
         shell: bash
         run: |
           set -euo pipefail
@@ -51,18 +76,6 @@ jobs:
             "$XNU_SRC/iokit/Kernel/arm/hid/IOHIDUsageTables.h"
           bash "$base/hakios/base/xnu-deps/setup.sh" --stage1 2>&1 | tee evidence/setup-stage1.log
           bash "$base/hakios/base/xnu-deps/setup.sh" --stage2 2>&1 | tee evidence/setup-stage2.log
-          python3 - "$XNU_SRC/iokit/Kernel/houji-ufs-root/HoujiRootWindow.h" <<'PY'
-          from pathlib import Path
-          import sys
-          p = Path(sys.argv[1])
-          t = p.read_text()
-          old_id = "  static const uint8_t id[8]={0x1e,0x38,0x30,0x08,0x64,0xba,0x2b,0x7b};\n"
-          old_chk = "  for(unsigned i=0;i<8;i++)if(h[104+i]!=id[i])return false;\n"
-          if old_id not in t or old_chk not in t:
-              raise SystemExit("HFSX volume-id check not found")
-          p.write_text(t.replace(old_id, "").replace(old_chk, ""))
-          print("patched: fixed HFSX volume id check removed")
-          PY
           HOUJI_XNU="$XNU_SRC" HOUJI_REFERENCE="$base/hakios" \
             bash "$base/houji/tools/build-ios26-kernel.sh" --ram-only 2>&1 | tee evidence/kernel.log
           python3 "$base/houji/tools/build-ios26-first-entry.py" --output "$base/hello.macho" \
@@ -94,7 +107,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: houji-public-23g90-ram-kernel-evidence
+          name: houji-23g90-${{ inputs.native_volume != '' && 'native-root-offline' || 'ram' }}-kernel-evidence
           path: evidence
           if-no-files-found: error
 
@@ -121,25 +134,25 @@ jobs:
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: houji-public-23g90-ram-kernel-evidence
+          name: houji-23g90-${{ inputs.native_volume != '' && 'native-root-offline' || 'ram' }}-kernel-evidence
           path: out/kernel-evidence
 
-      - name: Fetch rootfs libraries
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release download ci-rootfs-full2-20261122 -R yang232138/houji-ios26-build -p rootfs-libs.tar.gz -O "$RUNNER_TEMP/rootfs-libs.tar.gz"
-          ls -l "$RUNNER_TEMP/rootfs-libs.tar.gz"
-      - name: Build UEFI, DarwinBoot and the RAM payload
+      - name: Build UEFI, DarwinBoot and the selected payload
         env:
           HOUJI_ARTIFACT_KEY: ${{ secrets.HOUJI_PUBLIC_RAM_ARTIFACT_KEY }}
         run: |
           set -euo pipefail
+          if [[ -n "$HOUJI_NATIVE_VOLUME_JSON" ]]; then
+            export HOUJI_NATIVE_VOLUME="$RUNNER_TEMP/native-volume.json"
+            export HOUJI_NATIVE_KERNEL="$RUNNER_TEMP/native-kernel.macho"
+            printf '%s\n' "$HOUJI_NATIVE_VOLUME_JSON" > "$HOUJI_NATIVE_VOLUME"
+            python3 ci/houji-public-ram/unseal-native-kernel.py
+          fi
           bash ci/houji-public-ram/firmware-build.sh 2>&1 | tee out/firmware-build.log
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: houji-public-23g90-firmware-evidence
+          name: houji-23g90-${{ inputs.native_volume != '' && 'native-root-offline' || 'ram' }}-firmware-evidence
           path: out/
           if-no-files-found: warn

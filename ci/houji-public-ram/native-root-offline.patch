@@ -1,0 +1,439 @@
+diff --git a/iokit/Kernel/houji-ufs-root/HoujiRootPolicy.h b/iokit/Kernel/houji-ufs-root/HoujiRootPolicy.h
+index 7931385..160d0a4 100644
+--- a/iokit/Kernel/houji-ufs-root/HoujiRootPolicy.h
++++ b/iokit/Kernel/houji-ufs-root/HoujiRootPolicy.h
+@@ -1,4 +1,4 @@
+-#define HOUJI_ROOT_GIB 32
++#include "HoujiExperimentVolume.h"
+ // SPDX-License-Identifier: BSD-2-Clause-Patent
+ static const uint32_t kHoujiRootFirst=2260480U;
+ // Existing qualified images keep 12 GiB. A newly built, separately verified
+@@ -6,9 +6,11 @@ static const uint32_t kHoujiRootFirst=2260480U;
+ #ifndef HOUJI_ROOT_GIB
+ #define HOUJI_ROOT_GIB 12
+ #endif
+-static_assert(HOUJI_ROOT_GIB==12 || HOUJI_ROOT_GIB==32,"Unqualified root geometry");
++static_assert(HOUJI_ROOT_GIB == 12, "Experiment requires a 12 GiB root window");
+ static const uint32_t kHoujiRootBlocks=HOUJI_ROOT_GIB*262144U;
+ static const uint64_t kHoujiRootBytes=uint64_t(HOUJI_ROOT_GIB)*1073741824ULL;
++static_assert(kHoujiRootFirst == HOUJI_EXPERIMENT_FIRST_LBA, "Unexpected root start LBA");
++static_assert(kHoujiRootBlocks == HOUJI_EXPERIMENT_BLOCKS, "Unexpected root length");
+ static bool houjiUfsRootCommandAllowed(const uint8_t *u,unsigned n,unsigned dir,uint32_t bytes,bool enabled,bool armed) {
+   if(!enabled || !u || n!=32 || u[0]!=1 || u[2] || u[3])return false;
+   for(unsigned i=4;i<12;i++)if(u[i])return false;
+diff --git a/iokit/Kernel/houji-ufs-root/HoujiRootWindow.h b/iokit/Kernel/houji-ufs-root/HoujiRootWindow.h
+index e760c97..91773d5 100644
+--- a/iokit/Kernel/houji-ufs-root/HoujiRootWindow.h
++++ b/iokit/Kernel/houji-ufs-root/HoujiRootWindow.h
+@@ -10,14 +10,22 @@ static bool houjiRootSpan(uint64_t offset,uint64_t bytes,HoujiRootSpan &out) {
+   return out.blocks && out.bytes && out.lba>=kHoujiRootFirst &&
+     out.lba-kHoujiRootFirst<kHoujiRootBlocks && out.blocks<=kHoujiRootBlocks-(out.lba-kHoujiRootFirst);
+ }
+-static bool houjiHfsRootHeader(const uint8_t *page,unsigned n) {
+-  if(!page || n!=4096)return false;
+-  const uint8_t *h=page+1024;
+-  static const uint8_t id[8]={0x1e,0x38,0x30,0x08,0x64,0xba,0x2b,0x7b};
+-  uint32_t total=(uint32_t(h[44])<<24)|(uint32_t(h[45])<<16)|(uint32_t(h[46])<<8)|h[47];
+-  if(h[0]!=0x48 || h[1]!=0x58 || h[2] || h[3]!=5 ||
+-     h[40] || h[41] || h[42]!=0x10 || h[43] || total!=kHoujiRootBlocks)return false;
+-  for(unsigned i=0;i<8;i++)if(h[104+i]!=id[i])return false;
++static bool houjiHfsRootHeader(const uint8_t *page, unsigned bytes, uint32_t lba) {
++  if (!page || bytes != 4096) return false;
++  unsigned offset;
++  if (lba == kHoujiRootFirst) offset = 1024;
++  else if (lba == kHoujiRootFirst + kHoujiRootBlocks - 1) offset = 3072;
++  else return false;
++
++  const uint8_t *header = page + offset;
++  constexpr uint8_t volumeId[8] = HOUJI_EXPERIMENT_ID_BYTES;
++  const uint32_t blocks = (uint32_t(header[44]) << 24) |
++      (uint32_t(header[45]) << 16) | (uint32_t(header[46]) << 8) | header[47];
++  if (header[0] != 'H' || header[1] != 'X' || header[2] != 0 || header[3] != 5 ||
++      header[40] != 0 || header[41] != 0 || header[42] != 0x10 || header[43] != 0 ||
++      blocks != kHoujiRootBlocks) return false;
++  for (unsigned i = 0; i != sizeof(volumeId); ++i)
++    if (header[104 + i] != volumeId[i]) return false;
+   return true;
+ }
+ // Returns 0, invalid-span=1, or transport-error=2. The caller serializes I/O.
+diff --git a/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp b/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp
+index 3b6a27b..3515f75 100644
+--- a/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp
++++ b/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp
+@@ -145,9 +145,9 @@ struct UfsHost {
+   uintptr_t smmu = 0, cb = 0;
+ };
+ UfsHost gHost = { OSSharedPtr<IOMemoryMap> (), OSSharedPtr<IOMemoryMap> (), 0, nullptr, nullptr, 0, nullptr, false };
+-static bool gLogEnabled, gLogArmed, gRootEnabled, gRootArmed, gReturnRecovery, gRecoveryArmed;
++static bool gRootEnabled, gRootArmed;
++static constexpr bool gLogEnabled = false, gReturnRecovery = false;
+ static bool gGptVerified, gFlagsInitialized;
+-static uint32_t gLogExpectedCrc;
+ 
+ static IOReturn recordTransport (IOReturn result, uint32_t ocs)
+ {
+@@ -213,8 +213,14 @@ static void hostWrite (unsigned offset, uint32_t value)
+ // Bring the live controller up for reading: map, SMMU pass-through for the UFS stream, take over
+ // the request list, wake the device from UFS-PowerDown and wait for LUN 0 to be ready.
+ // `why` receives a short reason on failure.
++// A firmware-produced ownership and DMA proof must replace this gate.
++static const volatile bool kHoujiUfsOwnershipProven = false;
+ static bool hostBringUp (const char **why)
+ {
++  if (!kHoujiUfsOwnershipProven) {
++    *why = "offline native root: UFS ownership and SID 0x60 DMA proof missing";
++    return false;
++  }
+   if (gHost.poisoned) {
+     *why = "transport quarantined";
+     return false;
+@@ -315,147 +321,10 @@ static bool hostBringUp (const char **why)
+ }
+ 
+ #include "HoujiGptCheck.h"
+-#include "HoujiLogFile.h"
+-#include "HoujiLogCommit.h"
+ #include "HoujiRootWindow.h"
+ #include "HoujiFirmwareUfs.inc"
+ #include "HoujiFirmwareProbe.inc"
+ 
+-extern "C" bool bsd_log_lock(bool);
+-extern "C" void bsd_log_unlock(void);
+-
+-// Normal BSD initialization context only. Never invoked from a panic handler,
+-// interrupt, or while owning the log lock. No allocation/I/O while locked.
+-static unsigned copyKernelMessages(char *dst,unsigned capacity) {
+-  unsigned done=0;
+-  bsd_log_lock(true);
+-  const struct msgbuf *m=msgbufp;
+-  if(m && m->msg_magic==MSG_MAGIC && m->msg_bufc && m->msg_size>0 &&
+-     m->msg_bufx>=0 && m->msg_bufx<m->msg_size) {
+-    unsigned size=unsigned(m->msg_size), count=size<capacity?size:capacity;
+-    unsigned at=(unsigned(m->msg_bufx)+size-count)%size;
+-    for(unsigned i=0;i<count;i++) {
+-      char c=m->msg_bufc[at];at=(at+1)%size;
+-      if(c)dst[done++]=c;
+-    }
+-  }
+-  bsd_log_unlock();
+-  return done;
+-}
+-
+-static IOReturn writeLogBlock(unsigned index,const uint8_t *data) {
+-  if(!gLogArmed || !gHost.ready || gHost.poisoned || index>=16 || !data) return kIOReturnNotPermitted;
+-  IOLockLock(gHost.lock);
+-  if(!hostClearUcd()) {IOLockUnlock(gHost.lock);return kIOReturnNotReady;}
+-  memcpy(gHost.virt+kDataOffset,data,4096);
+-  uint32_t lba=kHoujiLogLbas[index],scsi=0;
+-  uint8_t cdb[10]={0x2a,0,uint8_t(lba>>24),uint8_t(lba>>16),uint8_t(lba>>8),uint8_t(lba),0,0,1,0};
+-  IOReturn r=hostScsiDir(0,cdb,10,1,4096,1000000,&scsi);
+-  IOLockUnlock(gHost.lock);
+-  return r;
+-}
+-static IOReturn flushLog(void) {
+-  if(!gLogArmed || !gHost.ready || gHost.poisoned) return kIOReturnNotPermitted;
+-  IOLockLock(gHost.lock);
+-  uint8_t cdb[10]={0x35,0,0,0,0,0,0,0,0,0};uint32_t scsi=0;
+-  IOReturn r=hostScsiDir(0,cdb,10,0,0,1000000,&scsi);
+-  IOLockUnlock(gHost.lock);
+-  return r;
+-}
+-extern "C" unsigned houji_gpu_cached_timing(char *,unsigned);
+-extern "C" unsigned houji_framebuffer_snapshot(char *,unsigned);
+-extern "C" unsigned houji_display_timing_snapshot(char *,unsigned);
+-extern "C" unsigned houji_sample_snapshot(char *,unsigned);
+-extern "C" unsigned houji_network_stack_snapshot(char *,unsigned);
+-extern "C" unsigned houji_cpu_dvfs_snapshot(char *,unsigned);
+-extern "C" unsigned houji_adsp_snapshot(char *,unsigned);
+-#if HOUJI_IOS26
+-#include <machine/machine_routines.h>
+-extern "C" const void *houji26_panic_record(void);
+-#endif
+-#if HOUJI_IOS26 && (DEVELOPMENT || DEBUG)
+-extern "C" unsigned houji26_wallpaper_snapshot(char *,unsigned);
+-#endif
+-static const char *saveNativeLog(__unused const char *stage) {
+-  static uint8_t metadata[7*4096],image[65536];
+-  constexpr unsigned gpuCapacity=20480,displayCapacity=4096,sampleCapacity=12800;
+-  constexpr unsigned networkCapacity=512,cpuCapacity=1024,batteryCapacity=2048,panelCapacity=4096;
+-  constexpr unsigned wallpaperCapacity=3072;
+-  static_assert(sizeof(gNativeText)+gpuCapacity+displayCapacity+sampleCapacity+
+-    networkCapacity+cpuCapacity+batteryCapacity+panelCapacity+wallpaperCapacity+128<sizeof(image)-4096,
+-    "snapshot prefixes exceed existing log file");
+-  nativeStage("logfs metadata read");
+-  for(unsigned i=0;i<7;i++)
+-    if(hostRead4k(0,4096+i,1,metadata+i*4096)!=kIOReturnSuccess) return "log metadata read failed";
+-  const char *why=houjiLogFatError(metadata,sizeof(metadata));
+-  if(why)return why;
+-  nativeStage("reserved file allocation verified");
+-  for(unsigned i=0;i<16;i++)
+-    if(hostRead4k(0,kHoujiLogLbas[i],1,image+i*4096)!=kIOReturnSuccess) return "initial log file read failed";
+-  if(houjiCrc32(image,sizeof(image))!=(gLogExpectedCrc?gLogExpectedCrc:kHoujiLogInitialCrc))return "log file ownership/run ID changed";
+-  nativeStage("READ PASS; saving XNU snapshot before diagnostic stop");
+-  bzero(image,sizeof(image));
+-  unsigned used=gNativeTextBytes;
+-  memcpy(image+4096,gNativeText,used);
+-  used+=houji_gpu_cached_timing(reinterpret_cast<char *>(image+4096+used),gpuCapacity);
+-  used+=houji_framebuffer_snapshot(reinterpret_cast<char *>(image+4096+used),displayCapacity);
+-  used+=houji_display_timing_snapshot(reinterpret_cast<char *>(image+4096+used),panelCapacity);
+-  used+=houji_sample_snapshot(reinterpret_cast<char *>(image+4096+used),sampleCapacity);
+-  used+=houji_network_stack_snapshot(reinterpret_cast<char *>(image+4096+used),networkCapacity);
+-  used+=houji_cpu_dvfs_snapshot(reinterpret_cast<char *>(image+4096+used),cpuCapacity);
+-  unsigned batteryUsed=houjiBatterySurveySnapshot(reinterpret_cast<char *>(image+4096+used),batteryCapacity);
+-  used+=batteryUsed;
+-  unsigned fwUsed=houjiFwProbeSnapshot(reinterpret_cast<char *>(image+4096+used),batteryCapacity-batteryUsed);
+-  used+=fwUsed;batteryUsed+=fwUsed;
+-  used+=houji_adsp_snapshot(reinterpret_cast<char *>(image+4096+used),batteryCapacity-batteryUsed);
+-#if HOUJI_IOS26 && (DEVELOPMENT || DEBUG)
+-  static const char gpuEnd[]="HOUJI26 STARTUP RESULT: gpu-runtime-end ";
+-  static const char services[]="HOUJI26 STARTUP RESULT: stock-launchd-services ";
+-  if(stage && (!strncmp(stage,gpuEnd,sizeof(gpuEnd)-1) || !strncmp(stage,services,sizeof(services)-1)))
+-    used+=houji26_wallpaper_snapshot(reinterpret_cast<char *>(image+4096+used),wallpaperCapacity);
+-#endif
+-  static const char marker[]="\n--- XNU kernel message buffer (tail; NULs removed) ---\n";
+-  memcpy(image+4096+used,marker,sizeof(marker)-1);used+=sizeof(marker)-1;
+-  used+=copyKernelMessages(reinterpret_cast<char *>(image+4096+used),sizeof(image)-4096-used);
+-  houjiLogHeader(image,image+4096,used);
+-#if HOUJI_IOS26
+-  // Typed crash-record locator in previously unused header bytes. Written
+-  // only at existing healthy startup checkpoints, never from panic.
+-  const uint64_t panicPa=ml_static_vtop((vm_offset_t)houji26_panic_record());
+-  constexpr uint32_t panicBytes=544;
+-  if(gPhysSize>=panicBytes && panicPa>=gPhysBase && panicPa-gPhysBase<=gPhysSize-panicBytes) {
+-    memcpy(image+64,"HJPTR026",8);memcpy(image+72,&panicPa,8);memcpy(image+80,&panicBytes,4);
+-    const uint64_t ownedBase=gPhysBase,ownedBytes=gPhysSize;
+-    memcpy(image+88,&ownedBase,8);memcpy(image+96,&ownedBytes,8);
+-    bzero(image+40,4);const uint32_t headerCrc=houjiCrc32(image,4096);memcpy(image+40,&headerCrc,4);
+-  }
+-#endif
+-  // The armed window contains only the 16 preallocated file data sectors.
+-  // Commit header last, with a cache flush at each boundary. No FAT writes.
+-  gLogArmed=true;
+-  why=houjiCommitLog(image,sizeof(image),
+-    [](unsigned i,const uint8_t *p){return writeLogBlock(i,p)==kIOReturnSuccess;},
+-    [](){return flushLog()==kIOReturnSuccess;},
+-    [](unsigned i,uint8_t *p){return hostRead4k(0,kHoujiLogLbas[i],1,p)==kIOReturnSuccess;});
+-  gLogArmed=false;
+-  if(why)return why;
+-  gLogExpectedCrc=houjiCrc32(image,sizeof(image));
+-  IOLog("HOUJI XNU LOG: COMMIT/FLUSH/READBACK PASS bytes=%u crc=%08x\n",used,houjiLe32(image+36));
+-  return nullptr;
+-}
+-static const char *setRecoveryBoot(void);
+-static void logTrialReset(void) {
+-  const char *why=setRecoveryBoot();
+-  if(why)rootDiagnosticFailure(why);
+-  // Real houji FDT /soc/psci: compatible arm,psci-1.0, method smc.
+-  // Only after successful log and recovery-BCB readback; no active-slot changes.
+-  IOLog("HOUJI XNU LOG: verified snapshot; resetting through PSCI (recovery BCB requested)\n");
+-  __asm__ volatile("dsb sy" ::: "memory");
+-  register uint64_t x0 __asm__("x0")=0x84000009U;
+-  __asm__ volatile("smc #0" : "+r"(x0) :: "x1","x2","x3","x4","x5","x6","x7",
+-                   "x8","x9","x10","x11","x12","x13","x14","x15","x16","x17","cc","memory");
+-  panic("HOUJI XNU LOG: saved, PSCI reset unexpectedly returned %llx",x0);
+-}
+ static void rootDiagnosticFailure(const char *why) {
+   char text[2048];
+   formatUfsRootDiagnostics(text,sizeof(text),gRootDiagnostic,why);
+@@ -468,9 +337,9 @@ static void initializeNativeFlags(void) {
+   gCheckpointLock=IOLockAlloc();
+   if(!gCheckpointLock)panic("HOUJI checkpoint lock allocation");
+   gFlagsInitialized=true;gRootDiagnosticEnabled=true;
+-  int v=0;PE_parse_boot_argn("houji_ufs_log",&v,sizeof(v));gLogEnabled=v==1;
+-  v=0;PE_parse_boot_argn("houji_native_root",&v,sizeof(v));gRootEnabled=v==1;
+-  v=0;PE_parse_boot_argn("houji_return_recovery",&v,sizeof(v));gReturnRecovery=v==1;
++  int native = 0;
++  PE_parse_boot_argn("houji_native_root", &native, sizeof(native));
++  gRootEnabled = native == 1;
+ }
+ static void ensureNative(void) {
+   initializeNativeFlags();
+@@ -485,69 +354,33 @@ static void ensureNative(void) {
+   nativeStage("read all 64 GPT entries");
+   if(hostRead4k(0,2,2,entries)!=kIOReturnSuccess)rootDiagnosticFailure("GPT entry array read");
+   why=houjiGptError(header,sizeof(header),entries,sizeof(entries));
+-  if(why)rootDiagnosticFailure(why);
++  if (why) rootDiagnosticFailure(why);
++  constexpr char userdata[] = "userdata";
++  bool windowVerified = false;
++  for (unsigned i = 0; i < sizeof(entries); i += 128) {
++    const uint8_t *entry = entries + i;
++    bool matches = true;
++    for (unsigned j = 0; j < sizeof(userdata); ++j) {
++      if (entry[56 + j * 2] != userdata[j] || entry[57 + j * 2] != 0) {
++        matches = false;
++        break;
++      }
++    }
++    if (!matches) continue;
++    if (windowVerified || houjiLe64(entry + 32) != kHoujiRootFirst ||
++        houjiLe64(entry + 40) < kHoujiRootFirst + kHoujiRootBlocks - 1)
++      rootDiagnosticFailure("GPT userdata bounds differ from root policy");
++    windowVerified = true;
++  }
++  if (!windowVerified) rootDiagnosticFailure("GPT userdata entry absent");
+   gGptVerified=true;
+   nativeStage("native GPT verified 631fc7ea/9f1bb496");
+ }
+-static IOReturn writeNativeBlocks(uint32_t lba,unsigned blocks,const uint8_t *data) {
+-  if(!gHost.ready || gHost.poisoned || !data || !blocks || blocks>32)return kIOReturnNotReady;
+-  IOLockLock(gHost.lock);
+-  if(!hostClearUcd()){IOLockUnlock(gHost.lock);return kIOReturnNotReady;}
+-  memcpy(gHost.virt+kDataOffset,data,blocks*4096U);
+-  uint32_t scsi=0;
+-  uint8_t cdb[10]={0x2a,0,uint8_t(lba>>24),uint8_t(lba>>16),uint8_t(lba>>8),uint8_t(lba),0,uint8_t(blocks>>8),uint8_t(blocks),0};
+-  IOReturn r=hostScsiDir(0,cdb,10,1,blocks*4096U,1000000,&scsi);
+-  IOLockUnlock(gHost.lock);return r;
+-}
+-static IOReturn flushNative(void) {
+-  if(!gHost.ready || gHost.poisoned)return kIOReturnNotReady;
+-  IOLockLock(gHost.lock);
+-  uint8_t cdb[10]={0x35,0,0,0,0,0,0,0,0,0};uint32_t scsi=0;
+-  IOReturn r=hostScsiDir(0,cdb,10,0,0,1000000,&scsi);
+-  IOLockUnlock(gHost.lock);return r;
+-}
+-#include "HoujiRecoveryRecord.h"
+-static const char *setRecoveryBoot(void) {
+-  if(!gReturnRecovery)return nullptr;
+-  static uint8_t before[4096],after[4096],back[4096];
+-  if(hostRead4k(0,1024,1,before)!=kIOReturnSuccess)return "BCB read";
+-  memcpy(after,before,sizeof(after));
+-  if(!houjiRecoveryRecord(after,sizeof(after)))return "BCB build";
+-  gRecoveryArmed=true;
+-  IOReturn r=writeNativeBlocks(1024,1,after);
+-  if(r==kIOReturnSuccess)r=flushNative();
+-  gRecoveryArmed=false;
+-  if(r!=kIOReturnSuccess)return "BCB write/flush";
+-  if(hostRead4k(0,1024,1,back)!=kIOReturnSuccess || memcmp(after,back,sizeof(back)))return "BCB readback";
+-  IOLog("HOUJI RECOVERY: BCB verified; no wipe arguments; reserved/A-B data preserved\n");
+-  return nullptr;
+-}
+-extern "C" void houji_ufs_checkpoint(const char *stage,unsigned stopId) {
++extern "C" void houji_ufs_checkpoint(const char *stage, unsigned) {
+   initializeNativeFlags();
+-  if(!gLogEnabled && !gRootEnabled)return;
++  if (!gRootEnabled) return;
+   IOLockLock(gCheckpointLock);
+-  ensureNative();nativeStage(stage);
+-  int target=0;PE_parse_boot_argn("houji_checkpoint_stop",&target,sizeof(target));
+-  bool panicProbeArmed=false;
+-  if(stopId==3 && target==3 && gLogEnabled && gReturnRecovery) {
+-    int probe=0;
+-    if(PE_parse_boot_argn("houji_panic_probe",&probe,sizeof(probe)) && probe==1) {
+-      // Normal initialization context: finish the existing no-wipe BCB RMW
+-      // and full readback before the log commit or deliberate panic.
+-      const char *why=setRecoveryBoot();
+-      if(why)rootDiagnosticFailure(why);
+-      nativeStage("panic recovery self-test armed; verified BCB, panic after successful log commit");
+-      panicProbeArmed=true;
+-    }
+-  }
+-  if(gLogEnabled){const char *why=saveNativeLog(stage);if(why)rootDiagnosticFailure(why);}
+-  if(panicProbeArmed) {
+-    // The saved intent is not evidence that panic happened. Only reach this
+-    // distinct panic after successful commit/flush/readback; panic does no I/O.
+-    IOLockUnlock(gCheckpointLock);
+-    panic("HOUJI PANIC RECOVERY SELF-TEST: checkpoint3 log commit/readback passed");
+-  }
+-  if(stopId && target==int(stopId))logTrialReset();
++  nativeStage(stage);
+   IOLockUnlock(gCheckpointLock);
+ }
+ static IOLock *gRootWindowLock;
+@@ -594,10 +427,11 @@ static void reportCpuFrequencyReadOnly(void) {
+ static int nativeRootTransfer(void *,uint64_t offset,void *data,size_t bytes,int write) {
+   if((write!=0 && write!=1) || (!data && bytes) || offset>kHoujiRootBytes || bytes>kHoujiRootBytes-offset ||
+      ((offset|bytes)&511))return EINVAL;
++  if (write) return EROFS;
+   if(!gRootArmed || !gRootWindowLock || !gRootBounce)return ENXIO;
+   struct Operations {
+     bool read(uint32_t lba,unsigned blocks,uint8_t *p){return hostRead4k(0,lba,blocks,p)==kIOReturnSuccess;}
+-    bool write(uint32_t lba,unsigned blocks,const uint8_t *p){return writeNativeBlocks(lba,blocks,p)==kIOReturnSuccess;}
++    bool write(uint32_t, unsigned, const uint8_t *) { return false; }
+   } ops;
+   IOLockLock(gRootWindowLock);
+   int result=houjiRootTransfer(ops,offset,data,bytes,write!=0,gRootBounce);
+@@ -605,9 +439,7 @@ static int nativeRootTransfer(void *,uint64_t offset,void *data,size_t bytes,int
+   return result==0?0:result==1?EINVAL:EIO;
+ }
+ static int nativeRootSynchronize(void *) {
+-  if(!gRootArmed || !gRootWindowLock)return ENXIO;
+-  IOLockLock(gRootWindowLock);IOReturn r=flushNative();IOLockUnlock(gRootWindowLock);
+-  return r==kIOReturnSuccess?0:EIO;
++  return gRootArmed ? 0 : ENXIO;
+ }
+ #include "HoujiTouchProbe.inc"
+ #include "HoujiTouchDriver.inc"
+@@ -628,17 +460,21 @@ extern "C" void houji_ufs_root_attach(void) {
+   static bool attached;if(attached)return;
+   ensureNative();nativeStage("native root HFSX identity read");
+   static uint8_t page[4096];
+-  if(hostRead4k(0,kHoujiRootFirst,1,page)!=kIOReturnSuccess || !houjiHfsRootHeader(page,sizeof(page)))
+-    rootDiagnosticFailure("root HFSX geometry/volume ID does not match installed image");
++  constexpr uint32_t headerLbas[] = {
++    kHoujiRootFirst, kHoujiRootFirst + kHoujiRootBlocks - 1,
++  };
++  for (uint32_t lba : headerLbas) {
++    if (hostRead4k(0, lba, 1, page) != kIOReturnSuccess)
++      rootDiagnosticFailure("HFSX header read failed");
++    if (!houjiHfsRootHeader(page, sizeof(page), lba))
++      rootDiagnosticFailure("HFSX geometry/volume identity mismatch");
++  }
++  IOLog("HOUJI ROOT: both HFSX headers matched, image " HOUJI_EXPERIMENT_IMAGE_SHA "\n");
+   gRootWindowLock=IOLockAlloc();gRootBounce=static_cast<uint8_t *>(IOMalloc(131072));
+   if(!gRootWindowLock || !gRootBounce)rootDiagnosticFailure("root buffer allocation");
+-  int ramRoot=0;
+-  PE_parse_boot_argn("houji_root_ram",&ramRoot,sizeof(ramRoot));
+-  if (ramRoot != 1) {
+-    static const struct mdev_ops ops={nativeRootTransfer,nativeRootSynchronize};
+-    dev_t device=mdevadd_ops(0,kHoujiRootBytes,&ops,nullptr);
+-    if(device==(dev_t)-1)rootDiagnosticFailure("native block registration");
+-  }
++  static const struct mdev_ops ops={nativeRootTransfer,nativeRootSynchronize};
++  dev_t device=mdevadd_ops(0,kHoujiRootBytes,&ops,nullptr);
++  if(device==(dev_t)-1)rootDiagnosticFailure("native block registration");
+   gRootArmed=true;attached=true;
+   IOLog("HOUJI ROOT: md0 is native UFS LUN0 [%u,%u), bytes=%llu; no RAM root backing\n",
+         kHoujiRootFirst,kHoujiRootFirst+kHoujiRootBlocks,kHoujiRootBytes);
+diff --git a/iokit/Kernel/houji-ufs-root/RootCommands.h b/iokit/Kernel/houji-ufs-root/RootCommands.h
+index c032772..61b7413 100644
+--- a/iokit/Kernel/houji-ufs-root/RootCommands.h
++++ b/iokit/Kernel/houji-ufs-root/RootCommands.h
+@@ -2,11 +2,10 @@
+ // Shared production command path. Included inside the root transport namespace.
+ // The host harness replaces only MMIO, DMA synchronization, clock and lock primitives.
+ #include "HoujiReadPolicy.h"
+-#include "HoujiLogPolicy.h"
+ #include "HoujiRootPolicy.h"
+ #include "battery/HoujiFirmwareReadPolicy.h"
+ // Owned by gHost.lock; armed for one native firmware read and cleared before
+-// releasing the lock. Existing root/log/recovery write grants are unchanged.
++// releasing the lock.
+ static HoujiFirmwareReadGrant gFirmwareReadGrant;
+ 
+ struct HardwareTransferPort {
+@@ -35,20 +34,18 @@ static uint32_t loadBe32 (const uint8_t *at)
+ }
+ 
+ // Issue the UPIU already placed at gHost.virt + kUcdOffset through request slot 0. `direction` is
+-// the UTRD data direction (0 none, 1 from host, 2 to host). Direction 1 is reachable only through hostWrite4k, which
+-// confines it to the persistent store window. Returns the overall command status
++// the UTRD data direction (0 none, 2 to host). Returns the overall command status
+ // (0 = completed) in *ocs. Timeout/fatal status quarantines the allocation.
+ static IOReturn hostSubmit (uint32_t direction, uint32_t dataBytes, uint32_t timeoutUs, uint32_t *ocs)
+ {
+   *ocs = 15;
++  if (direction == 1) return kIOReturnNotPermitted;
+   if (!houjiUfsReadCommandAllowed(gHost.virt+kUcdOffset,32,direction,dataBytes) &&
+-      !houjiUfsLogCommandAllowed(gHost.virt+kUcdOffset,32,direction,dataBytes,gLogEnabled,gLogArmed) &&
+-      !houjiUfsRootCommandAllowed(gHost.virt+kUcdOffset,32,direction,dataBytes,gRootEnabled,gRootArmed) &&
+-      !houjiUfsRecoveryCommandAllowed(gHost.virt+kUcdOffset,32,direction,dataBytes,gReturnRecovery,gRecoveryArmed) &&
++      !houjiUfsRootCommandAllowed(gHost.virt+kUcdOffset,32,direction,dataBytes,gRootEnabled,false) &&
+       !houjiUfsFirmwareCommandAllowed(gHost.virt+kUcdOffset,32,direction,dataBytes,gFirmwareReadGrant))
+     return kIOReturnNotPermitted;
+   if (!timeoutUs || dataBytes > kDataMax || (dataBytes & 3) ||
+-      (dataBytes ? (direction != 1 && direction != 2) : direction != 0)) return kIOReturnBadArgument;
++      (dataBytes ? direction != 2 : direction != 0)) return kIOReturnBadArgument;
+   if (gHost.poisoned) return kIOReturnNotReady;
+   if (read32 (gHost.hc, 0x58) != 0) {
+     gHost.poisoned = true;

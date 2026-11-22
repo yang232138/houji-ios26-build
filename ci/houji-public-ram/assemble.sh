@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ci="$GITHUB_WORKSPACE/ci/houji-public-ram"
 base="$RUNNER_TEMP/houji-public-ram"
+command -v xcodebuild >/dev/null || { echo "xcodebuild missing: use the pinned macOS/Xcode runner" >&2; exit 127; }
+command -v xcrun >/dev/null || { echo "xcrun missing: use the pinned macOS/Xcode runner" >&2; exit 127; }
 mkdir "$base"
 fetch() {
     local name=$1 repository=$2 revision=$3
@@ -27,9 +30,31 @@ git -C "$base/houji" apply --index "$GITHUB_WORKSPACE/ci/houji-public-ram/symbol
 python3 "$base/houji/tools/update-source-manifest.py"
 python3 "$base/houji/tools/check-source-tree.py"
 sdk=$(xcrun --sdk macosx --show-sdk-path)
-ram_id=$(python3 -c 'import uuid; print(uuid.uuid4())')
+trial_id=$(python3 -c 'import uuid; print(uuid.uuid4())')
+profile=()
+if [[ -z ${HOUJI_NATIVE_VOLUME:-} ]]; then
+    profile=(--ram-only-id "$trial_id")
+fi
 python3 "$base/houji/tools/prepare-ios26-sources.py" kernel \
     --upstream "$base/apple-xnu" --hfs-upstream "$base/hfs" --reference "$base/hakios" \
     --target-conditionals "$sdk/usr/include/TargetConditionals.h" \
-    --ram-only-id "$ram_id" --output "$base/xnu"
+    "${profile[@]}" --output "$base/xnu"
 git -C "$base/hakios" apply "$base/houji/kernel/ios26/patches/reference-toolchain.patch"
+
+if [[ -n ${HOUJI_NATIVE_VOLUME:-} ]]; then
+    driver="$base/xnu/iokit/Kernel/houji-ufs-root"
+    git -C "$base/xnu" apply --check "$ci/native-root-offline.patch"
+    git -C "$base/xnu" apply "$ci/native-root-offline.patch"
+    python3 "$ci/volume-identity.py" --from-record "$HOUJI_NATIVE_VOLUME" --header "$driver/HoujiExperimentVolume.h"
+    printf '%s\n' "$trial_id" > "$base/native-trial-id"
+    python3 - "$driver" "$trial_id" <<'PY'
+import sys
+import uuid
+from pathlib import Path
+directory = Path(sys.argv[1])
+values = ", ".join(map(str, uuid.UUID(sys.argv[2]).bytes))
+(directory / "HoujiZapTrial.h").write_text(
+    "#pragma once\n#include <stdint.h>\n" +
+    f"static const uint8_t kHoujiZapTrial[16] = {{{values}}};\n")
+PY
+fi

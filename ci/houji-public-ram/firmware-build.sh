@@ -5,18 +5,25 @@
 set -euo pipefail
 
 base="$RUNNER_TEMP/houji-firmware"
-mkdir -p "$base"
+mkdir "$base"
+ci="$GITHUB_WORKSPACE/ci/houji-public-ram"
+if [[ -n ${HOUJI_NATIVE_VOLUME:-} ]]; then
+    : "${HOUJI_NATIVE_KERNEL:?Path to the newly linked native kernel}"
+    python3 "$ci/native-payload.py" check-kernel "$HOUJI_NATIVE_KERNEL" --volume "$HOUJI_NATIVE_VOLUME"
+fi
 fetch() {
     local name=$1 repository=$2 revision=$3
+    local remote=${4:-https://github.com/$repository.git}
     mkdir "$base/$name"
     git -C "$base/$name" init -q
-    git -C "$base/$name" fetch -q --depth=1 "https://github.com/$repository.git" "$revision"
+    printf 'Fetching %s at %s\n' "$repository" "$revision"
+    git -C "$base/$name" -c http.lowSpeedTime=25 -c http.lowSpeedLimit=1 fetch -q --depth=1 "$remote" "$revision"
     git -C "$base/$name" -c advice.detachedHead=false checkout -q FETCH_HEAD
     test "$(git -C "$base/$name" rev-parse HEAD)" = "$revision"
     printf '%s %s\n' "$name" "$revision"
 }
 
-fetch houji lonzzi/UniXNU-houji "$HOUJI_PUBLIC_REVISION"
+fetch houji lonzzi/UniXNU-houji "$HOUJI_PUBLIC_REVISION" "${HOUJI_BASE_SOURCE:-}"
 git -C "$base/houji" apply --index "$GITHUB_WORKSPACE/ci/houji-public-ram/local.patch"
 fetch mu Project-Silicium/Mu-Silicium 42fe563791e51bf5500c2e470ed294ca0c94b97c
 fetch unixnu UniXNU/UniXNU 79d81c10220caebb15da5737a4eb6c20724cc731
@@ -58,8 +65,13 @@ test -f "$base/uefi/Mu_Basecore/UefiCpuPkg/Library/ArmMmuLib/HoujiCpDeviceNgNreP
 # Boot manager and DarwinBoot overlays come from the pinned public profile.
 python3 "$base/houji/tools/prepare-ios26-sources.py" boot_manager \
     --upstream "$base/unixnu" --output "$base/unixnu-src"
+loader_profile=()
+if [[ -n ${HOUJI_NATIVE_VOLUME:-} ]]; then
+    trial_id=$(cat "$RUNNER_TEMP/houji-public-ram/native-trial-id")
+    loader_profile=(--ram-only-id "$trial_id")
+fi
 python3 "$base/houji/tools/prepare-ios26-sources.py" bootloader \
-    --upstream "$base/darwinboot" --output "$base/darwinboot-src"
+    "${loader_profile[@]}" --upstream "$base/darwinboot" --output "$base/darwinboot-src"
 
 # OEM vendor package and the base ADT travel with the private repository, so
 # the exact bytes are checked here instead of relying on secret transport.
@@ -139,6 +151,15 @@ edk2_build() {
 darwinboot="$base/uefi/Build/houjiPkg/DEBUG_CLANGPDB/AARCH64/DarwinBoot.efi"
 test -s "$darwinboot"
 
+if [[ ${HOUJI_FIRMWARE_ONLY:-0} == 1 ]]; then
+    file "$darwinboot"
+    sha256sum "$darwinboot"
+    exit 0
+fi
+if [[ -n ${HOUJI_NATIVE_VOLUME:-} ]]; then
+    mkdir "$base/inputs"
+    cp "$HOUJI_NATIVE_KERNEL" "$base/inputs/kernel.macho"
+else
 # The kernel job produced the linked XNU and the static PID1; decrypt both and
 # prepare the one-use ADT and FAT payload with the same upstream tools.
 python3 - "$base" <<'PY'
@@ -147,17 +168,29 @@ from pathlib import Path
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 base = Path(os.environ["RUNNER_TEMP"]) / "houji-firmware"
 evidence = Path("out/kernel-evidence")
+receipt = json.loads((evidence / "build.json").read_text())
+if receipt["workflow_commit"] != os.environ["GITHUB_SHA"] or receipt["public_commit"] != os.environ["HOUJI_PUBLIC_REVISION"]:
+    raise ValueError("Kernel artifact came from a different workflow source")
+if receipt["scope"] != "linked RAM-only XNU and static PID1":
+    raise ValueError("Expected RAM-only kernel input for the RAM profile")
 archive = evidence / "compiled.zip.aesgcm"
 key = bytes.fromhex(os.environ["HOUJI_ARTIFACT_KEY"])
-plain = AESGCM(key).decrypt(archive.read_bytes()[:12], archive.read_bytes()[12:], b"houji-public-23g90-ram-v1")
+sealed = archive.read_bytes()
+if hashlib.sha256(sealed).hexdigest() != receipt["archive_sha256"]:
+    raise ValueError("Encrypted kernel digest differs from its build receipt")
+plain = AESGCM(key).decrypt(sealed[:12], sealed[12:], b"houji-public-23g90-ram-v1")
 input_dir = base / "inputs"
 input_dir.mkdir()
 with zipfile.ZipFile(io.BytesIO(plain)) as zipped:
     for name in ("mach.development.houji", "hello.macho"):
-        (input_dir / name).write_bytes(zipped.read(name))
+        data = zipped.read(name)
+        if receipt["files"][name] != {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}:
+            raise ValueError(f"Kernel artifact member differs: {name}")
+        (input_dir / name).write_bytes(data)
 (input_dir / "kernel.macho").write_bytes((input_dir / "mach.development.houji").read_bytes())
 print("decrypted kernel", hashlib.sha256((input_dir / "kernel.macho").read_bytes()).hexdigest())
 PY
+fi
 cp "$base/base.adt" "$base/inputs/houji.base.adt"
 python3 "$base/houji/tools/make-ios26-adt.py" --input "$base/inputs/houji.base.adt" \
     --output "$base/inputs/houji.adt"
@@ -179,37 +212,16 @@ path.write_bytes(blob)
 print("darwinboot-memory-size -> 0x15000000 (fits the reported UEFI free window)")
 PY
 cp "$darwinboot" "$base/inputs/DarwinBoot.efi"
-# Build a raw HFS RAM root with the real launchd plus dyld, libSystem and
-# the Swift runtime split out of the Cryptex shared cache.
-mkdir -p "$base/mnt"
-cp "$RUNNER_TEMP/rootfs-libs.tar.gz" "$base/inputs/rootfs-libs.tar.gz"
-dd if=/dev/zero of="$base/root.img" bs=1M count=40 status=none
-mkfs.hfsplus -v HOUJI26 "$base/root.img"
-sudo mount -o loop "$base/root.img" "$base/mnt"
-sudo mkdir -p "$base/mnt/sbin" "$base/mnt/usr/lib/system" "$base/mnt/usr/lib/swift" "$base/mnt/dev" "$base/mnt/System/Library" "$base/mnt/private/tmp"
-sudo tar -xzf "$base/inputs/rootfs-libs.tar.gz" -C "$base/mnt"
-sudo chmod 755 "$base/mnt/sbin/launchd"
-sudo umount "$base/mnt"
-cp "$base/root.img" "$base/inputs/hello.macho"
-ls -l "$base/inputs/hello.macho"
-python3 "$base/houji/tools/make-ios26-first-entry.py" --inputs "$base/inputs" \
-    --output "$base/payload.img"
+if [[ -n ${HOUJI_NATIVE_VOLUME:-} ]]; then
+    PYTHONPATH="$base/houji/tools" python3 "$ci/native-payload.py" build \
+        --kernel "$base/inputs/kernel.macho" --adt "$base/inputs/houji.adt" \
+        --darwinboot "$darwinboot" --volume "$HOUJI_NATIVE_VOLUME" --payload "$base/payload.img"
+else
+    python3 "$base/houji/tools/make-ios26-first-entry.py" --inputs "$base/inputs" \
+        --output "$base/payload.img"
+    mtype -i "$base/payload.img" ::/EFI/UniXNU/unixnu.toml | grep -F 'houji_native_root=0'
+fi
 test -s "$base/payload.img"
-
-# Force native root by patching the first-entry tool before the payload is built.
-python3 - "$base/houji/tools/make-ios26-first-entry.py" <<'PY'
-from pathlib import Path
-import sys
-p = Path(sys.argv[1])
-t = p.read_text()
-if "houji_native_root=0" not in t:
-    raise SystemExit("houji_native_root=0 not found")
-t = t.replace("'houji_native_root=0'", "'houji_native_root=1'")
-t = t.replace("houji_native_root=0", "houji_native_root=1")
-t = t.replace("houji_trial_seconds=90", "houji_trial_seconds=300")
-p.write_text(t)
-print("patched make-ios26-first-entry.py for native root")
-PY
 
 # Pass two: bind the exact payload CRC into HoujiRamDiskDxe and build the FD.
 python3 "$GITHUB_WORKSPACE/ci/houji-public-ram/stage-ram-payload.py" \
