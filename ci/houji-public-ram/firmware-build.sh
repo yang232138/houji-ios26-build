@@ -179,6 +179,11 @@ path.write_bytes(blob)
 print("darwinboot-memory-size -> 0x18000000 (fits the reported UEFI free window)")
 PY
 cp "$darwinboot" "$base/inputs/DarwinBoot.efi"
+# The HFS RAM root (with the real launchd) replaces the static PID1
+# initrd so the kernel mounts a real filesystem instead of mockfs.
+if [ -f out/kernel-evidence/root.img ]; then
+    cp out/kernel-evidence/root.img "$base/inputs/hello.macho"
+fi
 python3 "$base/houji/tools/make-ios26-first-entry.py" --inputs "$base/inputs" \
     --output "$base/payload.img"
 test -s "$base/payload.img"
