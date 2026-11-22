@@ -179,11 +179,25 @@ path.write_bytes(blob)
 print("darwinboot-memory-size -> 0x18000000 (fits the reported UEFI free window)")
 PY
 cp "$darwinboot" "$base/inputs/DarwinBoot.efi"
-# The HFS RAM root (with the real launchd) replaces the static PID1
-# initrd so the kernel mounts a real filesystem instead of mockfs.
-if [ -f out/kernel-evidence/root.img ]; then
-    cp out/kernel-evidence/root.img "$base/inputs/hello.macho"
-fi
+# Build a raw HFS RAM root with the real launchd and use it as the initrd.
+# The kernel mounts this volume through sweet_hfs instead of mockfs.
+mkdir -p "$base/mnt"
+python3 - "$base" <<'PY'
+import base64, os, sys
+from pathlib import Path
+base = Path(sys.argv[1])
+src = Path(os.environ['GITHUB_WORKSPACE'], 'ci/houji-public-ram/launchd.b64')
+(base / 'inputs').mkdir(exist_ok=True)
+(base / 'inputs/launchd').write_bytes(base64.b64decode(src.read_text()))
+PY
+dd if=/dev/zero of="$base/root.img" bs=1M count=16 status=none
+mkfs.hfsplus -v HOUJI26 "$base/root.img"
+sudo mount -o loop "$base/root.img" "$base/mnt"
+sudo mkdir -p "$base/mnt/sbin" "$base/mnt/dev" "$base/mnt/System/Library" "$base/mnt/private/tmp"
+sudo cp "$base/inputs/launchd" "$base/mnt/sbin/launchd"
+sudo chmod 755 "$base/mnt/sbin/launchd"
+sudo umount "$base/mnt"
+cp "$base/root.img" "$base/inputs/hello.macho"
 python3 "$base/houji/tools/make-ios26-first-entry.py" --inputs "$base/inputs" \
     --output "$base/payload.img"
 test -s "$base/payload.img"
