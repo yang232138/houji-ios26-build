@@ -183,7 +183,7 @@ cp "$darwinboot" "$base/inputs/DarwinBoot.efi"
 # the Swift runtime split out of the Cryptex shared cache.
 mkdir -p "$base/mnt"
 cp "$RUNNER_TEMP/rootfs-libs.tar.gz" "$base/inputs/rootfs-libs.tar.gz"
-dd if=/dev/zero of="$base/root.img" bs=1M count=200 status=none
+dd if=/dev/zero of="$base/root.img" bs=1M count=120 status=none
 mkfs.hfsplus -v HOUJI26 "$base/root.img"
 sudo mount -o loop "$base/root.img" "$base/mnt"
 sudo mkdir -p "$base/mnt/sbin" "$base/mnt/usr/lib/system" "$base/mnt/usr/lib/swift" "$base/mnt/dev" "$base/mnt/System/Library" "$base/mnt/private/tmp"
