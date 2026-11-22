@@ -196,12 +196,20 @@ python3 "$base/houji/tools/make-ios26-first-entry.py" --inputs "$base/inputs" \
     --output "$base/payload.img"
 test -s "$base/payload.img"
 
-# Force native root before the CRC is bound into HoujiRamDiskDxe.
-mcopy -o -i "$base/payload.img" ::/EFI/UniXNU/unixnu.toml "$RUNNER_TEMP/unixnu.toml"
-sed -i 's/houji_native_root=0/houji_native_root=1/' "$RUNNER_TEMP/unixnu.toml"
-sed -i 's/houji_trial_seconds=90/houji_trial_seconds=300/' "$RUNNER_TEMP/unixnu.toml"
-mcopy -o -i "$base/payload.img" "$RUNNER_TEMP/unixnu.toml" ::/EFI/UniXNU/unixnu.toml
-grep -q 'houji_native_root=1' "$RUNNER_TEMP/unixnu.toml"
+# Force native root by patching the first-entry tool before the payload is built.
+python3 - "$base/houji/tools/make-ios26-first-entry.py" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+t = p.read_text()
+if "houji_native_root=0" not in t:
+    raise SystemExit("houji_native_root=0 not found")
+t = t.replace("'houji_native_root=0'", "'houji_native_root=1'")
+t = t.replace("houji_native_root=0", "houji_native_root=1")
+t = t.replace("houji_trial_seconds=90", "houji_trial_seconds=300")
+p.write_text(t)
+print("patched make-ios26-first-entry.py for native root")
+PY
 
 # Pass two: bind the exact payload CRC into HoujiRamDiskDxe and build the FD.
 python3 "$GITHUB_WORKSPACE/ci/houji-public-ram/stage-ram-payload.py" \
