@@ -62,13 +62,13 @@ jobs:
         run: |
           set -euo pipefail
           base="$RUNNER_TEMP/houji-public-ram"
-          mkdir -p "$base/rootfs/sbin" "$base/rootfs/dev" "$base/rootfs/System/Library" "$base/rootfs/private/tmp"
+          mkdir -p "$base/rootfs/sbin" "$base/rootfs/dev" "$base/rootfs/System/Library" "$base/rootfs/private/tmp" "$base/mnt"
           python3 -c "import base64;open(r'$base/rootfs/sbin/launchd','wb').write(base64.b64decode(open('ci/houji-public-ram/launchd.b64').read()))"
           chmod 755 "$base/rootfs/sbin/launchd"
-          hdiutil create -size 16m -fs HFS+ -volname HOUJI26 -layout NONE -ov "$base/root.img" >/dev/null
-          hdiutil attach "$base/root.img" -mountpoint "$base/mnt" >/dev/null
+          hdiutil create -size 16m -fs HFS+ -volname HOUJI26 -layout NONE -ov "$base/root.img"
+          hdiutil attach "$base/root.img" -mountpoint "$base/mnt"
           cp -R "$base/rootfs/." "$base/mnt/"
-          hdiutil detach "$base/mnt" >/dev/null
+          hdiutil detach "$base/mnt"
           cp "$base/root.img" evidence/root.img
           ls -l evidence/root.img
       - name: Hash and encrypt compiled binaries
