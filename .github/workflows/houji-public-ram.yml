@@ -116,7 +116,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release download ci-rootfs-mini-20261122 -R yang232138/houji-ios26-build -p rootfs-libs.tar.gz -O "$RUNNER_TEMP/rootfs-libs.tar.gz"
+          gh release download ci-rootfs-full2-20261122 -R yang232138/houji-ios26-build -p rootfs-libs.tar.gz -O "$RUNNER_TEMP/rootfs-libs.tar.gz"
           ls -l "$RUNNER_TEMP/rootfs-libs.tar.gz"
       - name: Build UEFI, DarwinBoot and the RAM payload
         env:
