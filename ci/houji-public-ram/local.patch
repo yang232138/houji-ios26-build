@@ -563,29 +563,6 @@ index 034e551..50a4a91 100644
  
  if __name__ == '__main__':
 
-diff --git a/kernel/ios26/patches/local.patch b/kernel/ios26/patches/local.patch
-index a460dea..c74c627 100644
---- a/kernel/ios26/patches/local.patch
-+++ b/kernel/ios26/patches/local.patch
-@@ -2277,7 +2277,7 @@ diff --git a/bsd/vfs/vfs_subr.c b/bsd/vfs/vfs_subr.c
-  	for (vfsp = vfsconf; vfsp; vfsp = vfsp->vfc_next) {
- +#if HOUJI_IOS26
- +		if (!hjrfs26_candidate(houji_native_root, vfsp->vfc_name)) continue;
--+		if (houji_native_root == 1) printf("HOUJI26 ROOTFS: attempt=%s; mockfs fallback disabled\n", vfsp->vfc_name);
-++		printf("HOUJI26 ROOTFS: attempt=%s\n", vfsp->vfc_name);
- +#endif
-  		if (vfsp->vfc_mountroot == NULL
-  		    && !ISSET(vfsp->vfc_vfsflags, VFC_VFSCANMOUNTROOT)) {
-@@ -2287,7 +2287,7 @@ diff --git a/bsd/vfs/vfs_subr.c b/bsd/vfs/vfs_subr.c
-  		}
-  
- +#if HOUJI_IOS26
--+		if (houji_native_root == 1) printf("HOUJI26 ROOTFS: callback=%s result=%d\n", vfsp->vfc_name, error);
-++		printf("HOUJI26 ROOTFS: callback=%s result=%d\n", vfsp->vfc_name, error);
- +#endif
-  		if (!error) {
-  			if (bdevvp_rootvp != rootvp) {
-
 diff --git a/bootloader/ios26/patches/local.patch b/bootloader/ios26/patches/local.patch
 index 582ac30..e656183 100644
 --- a/bootloader/ios26/patches/local.patch
@@ -705,10 +682,10 @@ index 047c8cc..a6baa55 100644
  }
  #endif
 diff --git a/tools/make-ios26-first-entry.py b/tools/make-ios26-first-entry.py
-index 818ccbb..83b2768 100644
+index 818ccbb..0ba96be 100644
 --- a/tools/make-ios26-first-entry.py
 +++ b/tools/make-ios26-first-entry.py
-@@ -83,9 +83,13 @@ def main():
+@@ -83,14 +83,18 @@ def main():
      if not all(token in a.boot_args.split() for token in ('cpus=1', 'rd=md0', 'houji_native_root=0', 'houji_return_recovery=1')) or 'houji_gpu_' in a.boot_args:
          raise ValueError('First-entry profile must be one CPU, RAM root, bounded recovery, no GPU')
      hello = (a.inputs / 'hello.macho').read_bytes()
@@ -725,3 +702,9 @@ index 818ccbb..83b2768 100644
      config = first_entry_config(a.boot_args)
      a.output.parent.mkdir(parents=True, exist_ok=True)
      with a.output.open('xb') as f:
+         os.chmod(a.output, 0o600)
+-        f.truncate(64 * 1024 * 1024)
++        f.truncate(192 * 1024 * 1024)
+     def run(tool, *args):
+         subprocess.run([tool, '-i', str(a.output), *map(str, args)], check=True)
+     run('mformat', '-F', '-v', 'HOUJIESP', '-N', '0x484f554a', '::')
