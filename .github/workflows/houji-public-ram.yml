@@ -112,6 +112,12 @@ jobs:
           name: houji-public-23g90-ram-kernel-evidence
           path: out/kernel-evidence
 
+      - name: Fetch rootfs libraries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download ci-rootfs-20261122 -R yang232138/houji-ios26-build -p rootfs-libs.tar.gz -O "$RUNNER_TEMP/rootfs-libs.tar.gz"
+          ls -l "$RUNNER_TEMP/rootfs-libs.tar.gz"
       - name: Build UEFI, DarwinBoot and the RAM payload
         env:
           HOUJI_ARTIFACT_KEY: ${{ secrets.HOUJI_PUBLIC_RAM_ARTIFACT_KEY }}
