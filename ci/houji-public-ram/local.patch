@@ -563,6 +563,29 @@ index 034e551..50a4a91 100644
  
  if __name__ == '__main__':
 
+diff --git a/kernel/ios26/patches/local.patch b/kernel/ios26/patches/local.patch
+index a460dea..c74c627 100644
+--- a/kernel/ios26/patches/local.patch
++++ b/kernel/ios26/patches/local.patch
+@@ -2277,7 +2277,7 @@ diff --git a/bsd/vfs/vfs_subr.c b/bsd/vfs/vfs_subr.c
+  	for (vfsp = vfsconf; vfsp; vfsp = vfsp->vfc_next) {
+ +#if HOUJI_IOS26
+ +		if (!hjrfs26_candidate(houji_native_root, vfsp->vfc_name)) continue;
+-+		if (houji_native_root == 1) printf("HOUJI26 ROOTFS: attempt=%s; mockfs fallback disabled\n", vfsp->vfc_name);
+++		printf("HOUJI26 ROOTFS: attempt=%s\n", vfsp->vfc_name);
+ +#endif
+  		if (vfsp->vfc_mountroot == NULL
+  		    && !ISSET(vfsp->vfc_vfsflags, VFC_VFSCANMOUNTROOT)) {
+@@ -2287,7 +2287,7 @@ diff --git a/bsd/vfs/vfs_subr.c b/bsd/vfs/vfs_subr.c
+  		}
+  
+ +#if HOUJI_IOS26
+-+		if (houji_native_root == 1) printf("HOUJI26 ROOTFS: callback=%s result=%d\n", vfsp->vfc_name, error);
+++		printf("HOUJI26 ROOTFS: callback=%s result=%d\n", vfsp->vfc_name, error);
+ +#endif
+  		if (!error) {
+  			if (bdevvp_rootvp != rootvp) {
+
 diff --git a/bootloader/ios26/patches/local.patch b/bootloader/ios26/patches/local.patch
 index 582ac30..e656183 100644
 --- a/bootloader/ios26/patches/local.patch
