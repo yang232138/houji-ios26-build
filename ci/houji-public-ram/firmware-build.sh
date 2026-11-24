@@ -238,8 +238,10 @@ fi
 test -s "$base/payload.img"
 
 # Pass two: bind the exact payload CRC into HoujiRamDiskDxe and build the FD.
+echo "STAGE_PRE: payload=$(ls -l "$base/payload.img" 2>&1) json=$(ls -l "$base/payload.json" 2>&1)"
 python3 "$GITHUB_WORKSPACE/ci/houji-public-ram/stage-ram-payload.py" \
-    --payload "$base/payload.img" --uefi "$base/uefi"
+    --payload "$base/payload.img" --uefi "$base/uefi" 2>&1 || { rc=$?; echo "STAGE_FAILED rc=$rc"; exit $rc; }
+echo "STAGE_OK"
 (cd "$base/uefi" && edk2_build -D WITH_PAYLOAD=1)
 test -s "$base/uefi/Build/houjiPkg/DEBUG_CLANGPDB/FV/SILICIUM_UEFI.fd"
 test -s "$base/uefi/Build/houjiPkg/DEBUG_CLANGPDB/AARCH64/HoujiRamDiskDxe.efi"
