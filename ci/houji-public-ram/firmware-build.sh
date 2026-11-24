@@ -234,7 +234,7 @@ print("patched make-ios26-first-entry.py for native root")
 PY
 python3 "$base/houji/tools/make-ios26-first-entry.py" --inputs "$base/inputs" \
         --output "$base/payload.img"
-    mtype -i "$base/payload.img" ::/EFI/UniXNU/unixnu.toml | grep -F 'houji_native_root=0'
+    mtype -i "$base/payload.img" ::/EFI/UniXNU/unixnu.toml | grep -F 'houji_native_root=1'
 fi
 test -s "$base/payload.img"
 
