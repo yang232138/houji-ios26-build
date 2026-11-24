@@ -217,7 +217,21 @@ if [[ -n ${HOUJI_NATIVE_VOLUME:-} ]]; then
         --kernel "$base/inputs/kernel.macho" --adt "$base/inputs/houji.adt" \
         --darwinboot "$darwinboot" --volume "$HOUJI_NATIVE_VOLUME" --payload "$base/payload.img"
 else
-    python3 "$base/houji/tools/make-ios26-first-entry.py" --inputs "$base/inputs" \
+    # Force native root by patching the first-entry tool before the payload is built.
+python3 - "$base/houji/tools/make-ios26-first-entry.py" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+t = p.read_text()
+if "houji_native_root=0" not in t:
+    raise SystemExit("houji_native_root=0 not found")
+t = t.replace("'houji_native_root=0'", "'houji_native_root=1'")
+t = t.replace("houji_native_root=0", "houji_native_root=1")
+t = t.replace("houji_trial_seconds=90", "houji_trial_seconds=300")
+p.write_text(t)
+print("patched make-ios26-first-entry.py for native root")
+PY
+python3 "$base/houji/tools/make-ios26-first-entry.py" --inputs "$base/inputs" \
         --output "$base/payload.img"
     mtype -i "$base/payload.img" ::/EFI/UniXNU/unixnu.toml | grep -F 'houji_native_root=0'
 fi
