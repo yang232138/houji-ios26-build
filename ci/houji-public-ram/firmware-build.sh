@@ -218,6 +218,7 @@ if [[ -n ${HOUJI_NATIVE_VOLUME:-} ]]; then
         --darwinboot "$darwinboot" --volume "$HOUJI_NATIVE_VOLUME" --payload "$base/payload.img"
 else
     # Force native root by patching the first-entry tool before the payload is built.
+set -x; echo MAKE_TRACE_BEGIN
 python3 - "$base/houji/tools/make-ios26-first-entry.py" <<'PY'
 from pathlib import Path
 import sys
