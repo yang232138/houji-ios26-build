@@ -229,6 +229,8 @@ if "houji_native_root=0" not in t:
 t = t.replace("'houji_native_root=0'", "'houji_native_root=1'")
 t = t.replace("houji_native_root=0", "houji_native_root=1")
 t = t.replace("houji_trial_seconds=90", "houji_trial_seconds=300")
+t = t.replace("-v serial=0", "serial=0")
+t = t.replace("debug=0x14e", "debug=0x0")
 p.write_text(t)
 print("patched make-ios26-first-entry.py for native root")
 PY
