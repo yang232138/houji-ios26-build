@@ -31,14 +31,14 @@ python3 "$base/houji/tools/update-source-manifest.py"
 python3 "$base/houji/tools/check-source-tree.py"
 sdk=$(xcrun --sdk macosx --show-sdk-path)
 trial_id=$(python3 -c 'import uuid; print(uuid.uuid4())')
-profile=()
+set --
 if [[ -z ${HOUJI_NATIVE_VOLUME:-} ]]; then
-    profile=(--ram-only-id "$trial_id")
+    set -- --ram-only-id "$trial_id"
 fi
 python3 "$base/houji/tools/prepare-ios26-sources.py" kernel \
     --upstream "$base/apple-xnu" --hfs-upstream "$base/hfs" --reference "$base/hakios" \
     --target-conditionals "$sdk/usr/include/TargetConditionals.h" \
-    "${profile[@]}" --output "$base/xnu"
+    "$@" --output "$base/xnu"
 git -C "$base/hakios" apply "$base/houji/kernel/ios26/patches/reference-toolchain.patch"
 
 if [[ -n ${HOUJI_NATIVE_VOLUME:-} ]]; then
