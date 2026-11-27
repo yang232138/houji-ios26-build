@@ -9,14 +9,14 @@ on:
   workflow_dispatch:
     inputs:
       native_volume:
-        description: Read-only HFSX identity record for offline native root
+        description: Authenticated encrypted HFSX identity for offline native root
         type: string
         required: false
 
 run-name: houji 23G90 ${{ inputs.native_volume != '' && 'native-root-offline' || 'RAM-only' }}
 
 env:
-  HOUJI_NATIVE_VOLUME_JSON: ${{ inputs.native_volume }}
+  HOUJI_NATIVE_VOLUME_SEALED: ${{ inputs.native_volume }}
 
 permissions:
   contents: read
@@ -34,16 +34,30 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install the pinned evidence tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/houji-artifact-venv"
+          "$RUNNER_TEMP/houji-artifact-venv/bin/pip" -q install cryptography==50.0.2
+
+      - name: Authenticate the encrypted volume identity
+        if: inputs.native_volume != ''
+        shell: bash
+        env:
+          HOUJI_ARTIFACT_KEY: ${{ secrets.HOUJI_PUBLIC_RAM_ARTIFACT_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          volume="$RUNNER_TEMP/native-volume.json"
+          "$RUNNER_TEMP/houji-artifact-venv/bin/python" ci/houji-public-ram/native-volume-envelope.py --output "$volume"
+          echo "HOUJI_NATIVE_VOLUME=$volume" >> "$GITHUB_ENV"
+
       - name: Verify SDK and prepare pinned source
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p evidence
-          if [[ -n "$HOUJI_NATIVE_VOLUME_JSON" ]]; then
-            export HOUJI_NATIVE_VOLUME="$RUNNER_TEMP/native-volume.json"
-            printf '%s\n' "$HOUJI_NATIVE_VOLUME_JSON" > "$HOUJI_NATIVE_VOLUME"
-            echo "HOUJI_NATIVE_VOLUME=$HOUJI_NATIVE_VOLUME" >> "$GITHUB_ENV"
-          fi
           bash ci/houji-public-ram/assemble.sh 2>&1 | tee evidence/assemble.log
 
       - name: Verify the board firmware inputs
@@ -88,8 +102,6 @@ jobs:
           HOUJI_ARTIFACT_SECRET: ${{ secrets.HOUJI_PUBLIC_RAM_ARTIFACT_KEY }}
         run: |
           set -euo pipefail
-          python3 -m venv "$RUNNER_TEMP/houji-artifact-venv"
-          "$RUNNER_TEMP/houji-artifact-venv/bin/pip" -q install cryptography==50.0.2
           "$RUNNER_TEMP/houji-artifact-venv/bin/python" ci/houji-public-ram/artifact.py
 
       - name: Collect compiler diagnostics
@@ -142,11 +154,13 @@ jobs:
           HOUJI_ARTIFACT_KEY: ${{ secrets.HOUJI_PUBLIC_RAM_ARTIFACT_KEY }}
         run: |
           set -euo pipefail
-          if [[ -n "$HOUJI_NATIVE_VOLUME_JSON" ]]; then
+          if [[ -n "$HOUJI_NATIVE_VOLUME_SEALED" ]]; then
             export HOUJI_NATIVE_VOLUME="$RUNNER_TEMP/native-volume.json"
             export HOUJI_NATIVE_KERNEL="$RUNNER_TEMP/native-kernel.macho"
-            printf '%s\n' "$HOUJI_NATIVE_VOLUME_JSON" > "$HOUJI_NATIVE_VOLUME"
+            umask 077
+            python3 ci/houji-public-ram/native-volume-envelope.py --output "$HOUJI_NATIVE_VOLUME"
             python3 ci/houji-public-ram/unseal-native-kernel.py
+            umask 022
           fi
           bash ci/houji-public-ram/firmware-build.sh 2>&1 | tee out/firmware-build.log
 

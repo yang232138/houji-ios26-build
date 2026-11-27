@@ -217,40 +217,15 @@ if [[ -n ${HOUJI_NATIVE_VOLUME:-} ]]; then
         --kernel "$base/inputs/kernel.macho" --adt "$base/inputs/houji.adt" \
         --darwinboot "$darwinboot" --volume "$HOUJI_NATIVE_VOLUME" --payload "$base/payload.img"
 else
-    # Force native root by patching the first-entry tool before the payload is built.
-set -x; echo MAKE_TRACE_BEGIN
-python3 - "$base/houji/tools/make-ios26-first-entry.py" <<'PY'
-from pathlib import Path
-import sys
-p = Path(sys.argv[1])
-t = p.read_text()
-if "houji_native_root=0" not in t:
-    raise SystemExit("houji_native_root=0 not found")
-t = t.replace("'houji_native_root=0'", "'houji_native_root=1'")
-t = t.replace("houji_native_root=0", "houji_native_root=1")
-t = t.replace("houji_trial_seconds=90", "houji_trial_seconds=300")
-t = t.replace("-v serial=0", "serial=0")
-t = t.replace("debug=0x14e", "debug=0x0")
-t = t.replace("timeout = 3", "timeout = 1")
-t = t.replace("fallback_timeout = 5", "fallback_timeout = 1")
-t = t.replace("[[entry]]\nid = \"restart\"", "")
-t = t.replace("title = \"Restart to prearmed Recovery\"", "")
-t = t.replace("type = \"action\"", "")
-t = t.replace("action = \"reset\"", "")
-p.write_text(t)
-print("patched make-ios26-first-entry.py for native root")
-PY
-python3 "$base/houji/tools/make-ios26-first-entry.py" --inputs "$base/inputs" \
+    python3 "$base/houji/tools/make-ios26-first-entry.py" --inputs "$base/inputs" \
         --output "$base/payload.img"
-    mtype -i "$base/payload.img" ::/EFI/UniXNU/unixnu.toml | grep -F 'houji_native_root=1'
+    mtype -i "$base/payload.img" ::/EFI/UniXNU/unixnu.toml | grep -F 'houji_native_root=0'
 fi
 test -s "$base/payload.img"
 
 # Pass two: bind the exact payload CRC into HoujiRamDiskDxe and build the FD.
-echo "STAGE_PRE: payload=$(ls -l "$base/payload.img" 2>&1) json=$(ls -l "$base/payload.json" 2>&1)"
 python3 "$GITHUB_WORKSPACE/ci/houji-public-ram/stage-ram-payload.py" \
-    --payload "$base/payload.img" --uefi "$base/uefi" 2>&1 || { rc=$?; echo "STAGE_FAILED rc=$rc"; exit $rc; }
-echo "STAGE_OK"
+    --payload "$base/payload.img" --uefi "$base/uefi"
 (cd "$base/uefi" && edk2_build -D WITH_PAYLOAD=1)
 test -s "$base/uefi/Build/houjiPkg/DEBUG_CLANGPDB/FV/SILICIUM_UEFI.fd"
 test -s "$base/uefi/Build/houjiPkg/DEBUG_CLANGPDB/AARCH64/HoujiRamDiskDxe.efi"
