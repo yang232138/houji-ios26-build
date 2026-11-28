@@ -288,16 +288,17 @@ diff --git a/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp b/iokit/Kernel/houji-u
  
  // Bring the live controller up for reading: map, SMMU pass-through for the UFS stream, take over
  // the request list, wake the device from UFS-PowerDown and wait for LUN 0 to be ready.
-@@ -220,7 +234,15 @@
+@@ -220,7 +234,16 @@
  }
  }
  
 -#include "HoujiGptCheck.h"
-+extern "C" int houji26_ufs_capacity_from_handoff(const HoujiUfsCapacityHandoff *handoff, uint64_t *blocks) {
++// Retain the in-kernel entry points in the diagnostic build before board integration.
++extern "C" OS_USED int houji26_ufs_capacity_from_handoff(const HoujiUfsCapacityHandoff *handoff, uint64_t *blocks) {
 +  return runProbeCapacity(handoff, blocks);
 +}
 +
-+extern "C" int houji26_ufs_gpt_from_handoff(const HoujiUfsCapacityHandoff *handoff, uint64_t *blocks, uint32_t *crc32) {
++extern "C" OS_USED int houji26_ufs_gpt_from_handoff(const HoujiUfsCapacityHandoff *handoff, uint64_t *blocks, uint32_t *crc32) {
 +  if (!crc32) return kIOReturnBadArgument;
 +  return runProbeCapacity(handoff, blocks, crc32);
 +}
