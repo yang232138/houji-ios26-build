@@ -40,6 +40,10 @@ python3 "$base/houji/tools/prepare-ios26-sources.py" kernel \
     --target-conditionals "$sdk/usr/include/TargetConditionals.h" \
     "$@" --output "$base/xnu"
 git -C "$base/xnu" apply "$ci/root-policy.patch"
+if [[ ${HOUJI_UFS_GPT_COMPILE_CHECK:-0} == 1 ]]; then
+    git -C "$base/xnu" apply --check "$ci/ufs-gpt-compile-check.patch"
+    git -C "$base/xnu" apply "$ci/ufs-gpt-compile-check.patch"
+fi
 clang -std=c11 -Wall -Wextra -Werror -I "$base/xnu/bsd/sys" \
     "$ci/check-root-policy.c" -o "$base/check-root-policy"
 "$base/check-root-policy"

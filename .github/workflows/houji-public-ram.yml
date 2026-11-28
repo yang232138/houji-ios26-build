@@ -2,7 +2,7 @@ name: houji iPhone 23G90 kernel and firmware
 
 on:
   push:
-    branches: [main]
+    branches: [main, houji/ios26/ufs-gpt-build-check]
     paths:
       - '.github/workflows/houji-public-ram.yml'
       - 'ci/houji-public-ram/**'
@@ -13,10 +13,11 @@ on:
         type: string
         required: false
 
-run-name: houji 23G90 ${{ inputs.native_volume != '' && 'native-root-offline' || 'RAM-only' }}
+run-name: houji 23G90 ${{ github.ref_name == 'houji/ios26/ufs-gpt-build-check' && 'UFS GPT compile check' || (inputs.native_volume != '' && 'native-root-offline' || 'RAM-only') }}
 
 env:
   HOUJI_NATIVE_VOLUME_SEALED: ${{ inputs.native_volume }}
+  HOUJI_UFS_GPT_COMPILE_CHECK: ${{ github.ref_name == 'houji/ios26/ufs-gpt-build-check' && '1' || '0' }}
 
 permissions:
   contents: read
@@ -35,6 +36,7 @@ jobs:
           persist-credentials: false
 
       - name: Install the pinned evidence tool
+        if: env.HOUJI_UFS_GPT_COMPILE_CHECK != '1'
         shell: bash
         run: |
           set -euo pipefail
@@ -42,7 +44,7 @@ jobs:
           "$RUNNER_TEMP/houji-artifact-venv/bin/pip" -q install cryptography==50.0.2
 
       - name: Authenticate the encrypted volume identity
-        if: inputs.native_volume != ''
+        if: inputs.native_volume != '' && env.HOUJI_UFS_GPT_COMPILE_CHECK != '1'
         shell: bash
         env:
           HOUJI_ARTIFACT_KEY: ${{ secrets.HOUJI_PUBLIC_RAM_ARTIFACT_KEY }}
@@ -61,6 +63,7 @@ jobs:
           bash ci/houji-public-ram/assemble.sh 2>&1 | tee evidence/assemble.log
 
       - name: Verify the board firmware inputs
+        if: env.HOUJI_UFS_GPT_COMPILE_CHECK != '1'
         shell: bash
         env:
           HOUJI_SQE_A: ${{ secrets.HOUJI_PUBLIC_RAM_SQE_A }}
@@ -70,7 +73,7 @@ jobs:
           python3 ci/houji-public-ram/firmware.py 2>&1 | tee evidence/firmware.log
 
       - name: Compile and verify the native-root arm64e kernel (offline)
-        if: inputs.native_volume != ''
+        if: inputs.native_volume != '' && env.HOUJI_UFS_GPT_COMPILE_CHECK != '1'
         shell: bash
         run: |
           set -euo pipefail
@@ -79,7 +82,7 @@ jobs:
             bash ci/houji-public-ram/build-native-kernel.sh 2>&1 | tee evidence/kernel.log
 
       - name: Compile and verify the RAM-only arm64e kernel and PID1
-        if: inputs.native_volume == ''
+        if: inputs.native_volume == '' || env.HOUJI_UFS_GPT_COMPILE_CHECK == '1'
         shell: bash
         run: |
           set -euo pipefail
@@ -92,11 +95,16 @@ jobs:
           bash "$base/hakios/base/xnu-deps/setup.sh" --stage2 2>&1 | tee evidence/setup-stage2.log
           HOUJI_XNU="$XNU_SRC" HOUJI_REFERENCE="$base/hakios" \
             bash "$base/houji/tools/build-ios26-kernel.sh" --ram-only 2>&1 | tee evidence/kernel.log
+          if [[ "$HOUJI_UFS_GPT_COMPILE_CHECK" == 1 ]]; then
+            bash ci/houji-public-ram/check-ufs-gpt-kernel.sh "$XNU_SRC" 2>&1 | tee evidence/ufs-gpt-compile.log
+            exit 0
+          fi
           python3 "$base/houji/tools/build-ios26-first-entry.py" --output "$base/hello.macho" \
             2>&1 | tee evidence/pid1.log
           cp "$base/hello.json" evidence/pid1.json
 
       - name: Hash and encrypt compiled binaries
+        if: env.HOUJI_UFS_GPT_COMPILE_CHECK != '1'
         shell: bash
         env:
           HOUJI_ARTIFACT_SECRET: ${{ secrets.HOUJI_PUBLIC_RAM_ARTIFACT_KEY }}
@@ -119,11 +127,12 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: houji-23g90-${{ inputs.native_volume != '' && 'native-root-offline' || 'ram' }}-kernel-evidence
+          name: houji-23g90-${{ env.HOUJI_UFS_GPT_COMPILE_CHECK == '1' && 'ufs-gpt-compile' || (inputs.native_volume != '' && 'native-root-offline' || 'ram') }}-kernel-evidence
           path: evidence
           if-no-files-found: error
 
   firmware:
+    if: github.ref_name != 'houji/ios26/ufs-gpt-build-check'
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 70
