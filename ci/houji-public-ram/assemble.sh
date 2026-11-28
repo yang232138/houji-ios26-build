@@ -39,6 +39,10 @@ python3 "$base/houji/tools/prepare-ios26-sources.py" kernel \
     --upstream "$base/apple-xnu" --hfs-upstream "$base/hfs" --reference "$base/hakios" \
     --target-conditionals "$sdk/usr/include/TargetConditionals.h" \
     "$@" --output "$base/xnu"
+git -C "$base/xnu" apply "$ci/root-policy.patch"
+clang -std=c11 -Wall -Wextra -Werror -I "$base/xnu/bsd/sys" \
+    "$ci/check-root-policy.c" -o "$base/check-root-policy"
+"$base/check-root-policy"
 git -C "$base/hakios" apply "$base/houji/kernel/ios26/patches/reference-toolchain.patch"
 
 if [[ -n ${HOUJI_NATIVE_VOLUME:-} ]]; then

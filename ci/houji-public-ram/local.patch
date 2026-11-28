@@ -685,7 +685,7 @@ diff --git a/tools/make-ios26-first-entry.py b/tools/make-ios26-first-entry.py
 index 818ccbb..83b2768 100644
 --- a/tools/make-ios26-first-entry.py
 +++ b/tools/make-ios26-first-entry.py
-@@ -83,9 +83,13 @@ def main():
+@@ -83,9 +83,16 @@ def main():
      if not all(token in a.boot_args.split() for token in ('cpus=1', 'rd=md0', 'houji_native_root=0', 'houji_return_recovery=1')) or 'houji_gpu_' in a.boot_args:
          raise ValueError('First-entry profile must be one CPU, RAM root, bounded recovery, no GPU')
      hello = (a.inputs / 'hello.macho').read_bytes()
@@ -699,6 +699,10 @@ index 818ccbb..83b2768 100644
 +        _, _, hello_subtype = struct.unpack_from('<III', hello)
 +        if hello_subtype & 0xffffff != 2 or b'HOUJI IOS26 ARM64E PID1 REACHED' not in hello:
 +            raise ValueError('Expected the local static arm64e PID1 probe')
-     config = first_entry_config(a.boot_args)
+-    config = first_entry_config(a.boot_args)
++    if any(token.partition('=')[0] == 'houji_ram_pid1' for token in a.boot_args.split()):
++        raise ValueError('The packaged initrd determines the RAM PID1 root selection')
++    boot_args = a.boot_args if is_hfs else a.boot_args + ' houji_ram_pid1=1'
++    config = first_entry_config(boot_args)
      a.output.parent.mkdir(parents=True, exist_ok=True)
      with a.output.open('xb') as f:

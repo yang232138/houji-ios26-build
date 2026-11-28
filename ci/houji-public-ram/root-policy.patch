@@ -1,0 +1,42 @@
+diff --git a/bsd/sys/HoujiRootFs26.h b/bsd/sys/HoujiRootFs26.h
+--- a/bsd/sys/HoujiRootFs26.h
++++ b/bsd/sys/HoujiRootFs26.h
+@@ -1,10 +1,11 @@
+ /* SPDX-License-Identifier: BSD-2-Clause-Patent */
+ #ifndef HOUJI_ROOT_FS26_H
+ #define HOUJI_ROOT_FS26_H
+-/* The native device is a qualified HFSX volume. Mockfs accepts any device
+- * and would expose that whole volume as its single executable, so it must not
+- * win the RAM-root race: only sweet_hfs may claim the RAM disk. */
+-static inline int hjrfs26_candidate(int native_root,const char *name) {
+- return name && name[0]=='h' && name[1]=='f' && name[2]=='s' && name[3]==0;
++
++/* A raw PID1 image uses mockfs. A filesystem-backed root must pass HFS. */
++static inline int hjrfs26_candidate(int native_root, int ram_pid1, const char *name)
++{
++    const char *expected = native_root != 1 && ram_pid1 == 1 ? "mockfs" : "hfs";
++    return name && __builtin_strcmp(name, expected) == 0;
+ }
+ #endif
+diff --git a/bsd/vfs/vfs_subr.c b/bsd/vfs/vfs_subr.c
+--- a/bsd/vfs/vfs_subr.c
++++ b/bsd/vfs/vfs_subr.c
+@@ -1217,7 +1217,9 @@
+ 	vnode_t bdevvp_rootvp;
+ #if HOUJI_IOS26
+ 	int houji_native_root = 0;
++	int houji_ram_pid1 = 0;
+ 	PE_parse_boot_argn("houji_native_root", &houji_native_root, sizeof(houji_native_root));
++	PE_parse_boot_argn("houji_ram_pid1", &houji_ram_pid1, sizeof(houji_ram_pid1));
+ 	if (houji_native_root == 1 && mountroot != NULL) {
+ 		printf("HOUJI26 ROOTFS: native HFS root refuses alternate mountroot callback\n");
+ 		return EINVAL;
+@@ -1256,7 +1258,7 @@
+ 
+ 	for (vfsp = vfsconf; vfsp; vfsp = vfsp->vfc_next) {
+ #if HOUJI_IOS26
+-		if (!hjrfs26_candidate(houji_native_root, vfsp->vfc_name)) continue;
++		if (!hjrfs26_candidate(houji_native_root, houji_ram_pid1, vfsp->vfc_name)) continue;
+ 		if (houji_native_root == 1) printf("HOUJI26 ROOTFS: attempt=%s; mockfs fallback disabled\n", vfsp->vfc_name);
+ #endif
+ 		if (vfsp->vfc_mountroot == NULL
