@@ -437,3 +437,24 @@ index c032772..61b7413 100644
    if (gHost.poisoned) return kIOReturnNotReady;
    if (read32 (gHost.hc, 0x58) != 0) {
      gHost.poisoned = true;
+diff --git a/iokit/Kernel/houji-ufs-root/HoujiGpuNativeLive.inc b/iokit/Kernel/houji-ufs-root/HoujiGpuNativeLive.inc
+--- a/iokit/Kernel/houji-ufs-root/HoujiGpuNativeLive.inc
++++ b/iokit/Kernel/houji-ufs-root/HoujiGpuNativeLive.inc
+@@ -60,7 +60,7 @@
+  l.ufs_proven=l.fs_trial=1;a.active=a.in_op=1;
+  IOLog("HOUJI LIVE DMA: UFS=%llx owned=%llu descriptor=%u; disjoint from all27 retained GPU/GMU BOs,3 new BOs and both actual roots; new bounded coexistence trial\n",l.dma_pa,l.dma_owned,kDmaBytes);
+  static uint8_t header[4096];
+- if(hostRead4k(0,kHoujiRootFirst,1,header)!=kIOReturnSuccess || !houjiHfsRootHeader(header,sizeof(header)))return l.code=2;
++ if(hostRead4k(0,kHoujiRootFirst,1,header)!=kIOReturnSuccess || !houjiHfsRootHeader(header,sizeof(header),kHoujiRootFirst))return l.code=2;
+  houji_ufs_checkpoint("live GPU idle plus independent UFS read and preallocated-log commit qualification",0);
+  l.phase=2;
+  for(unsigned i=0;i<3;i++){
+@@ -78,7 +78,7 @@
+   if(a.client.dispatch(NativeAdrenoMethodSubmit,&request,sizeof(request),&reply,sizeof(reply),&a.clock) || reply.fence!=s.iteration)return l.code=5;s.seq=reply.fence;
+   houjiStockFullBarrier();l.before_fence=houjiCpCpu()[(HHR_SCRATCH+0x104-HHR_RING)/4];
+   if(frame&1){if(l.before_fence!=s.seq)++l.pending_write;houji_ufs_checkpoint("new bounded live-GPU/UFS concurrent fixed-log-write trial; all DMA buffers disjoint and retained",0);}
+-  else {if(l.before_fence!=s.seq)++l.pending_read;if(hostRead4k(0,kHoujiRootFirst,1,header)!=kIOReturnSuccess || !houjiHfsRootHeader(header,sizeof(header)))return l.code=6;}
++  else {if(l.before_fence!=s.seq)++l.pending_read;if(hostRead4k(0,kHoujiRootFirst,1,header)!=kIOReturnSuccess || !houjiHfsRootHeader(header,sizeof(header),kHoujiRootFirst))return l.code=6;}
+   houjiStockFullBarrier();l.after_fence=houjiCpCpu()[(HHR_SCRATCH+0x104-HHR_RING)/4];
+   NativeAdrenoAbiWaitFence wait={reply.fence,500000000};if(a.client.dispatch(NativeAdrenoMethodWaitFence,&wait,sizeof(wait),nullptr,0,&a.clock))return l.code=7;
+   s.observed=s.ring.completedFence();if(s.observed!=s.seq || houjiSubmitDrainPointers() || a.submit.outstanding() || houjiApiAuditTables())return l.code=8;
