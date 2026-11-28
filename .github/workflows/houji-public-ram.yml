@@ -63,7 +63,6 @@ jobs:
           bash ci/houji-public-ram/assemble.sh 2>&1 | tee evidence/assemble.log
 
       - name: Verify the board firmware inputs
-        if: env.HOUJI_UFS_GPT_COMPILE_CHECK != '1'
         shell: bash
         env:
           HOUJI_SQE_A: ${{ secrets.HOUJI_PUBLIC_RAM_SQE_A }}

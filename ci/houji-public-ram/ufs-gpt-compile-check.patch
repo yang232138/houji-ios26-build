@@ -31,7 +31,7 @@ diff --git a/iokit/Kernel/houji-ufs-root/HoujiUfsCapacityNative.inc b/iokit/Kern
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/houji-ufs-root/HoujiUfsCapacityNative.inc
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,181 @@
 +// SPDX-License-Identifier: BSD-2-Clause-Patent
 +// The capacity probe may also verify one known block. It never alters SMMU routing.
 +#include "HoujiUfsCapacityPort.h"
@@ -101,6 +101,9 @@ new file mode 100644
 +  if (gptCrc) *gptCrc = 0;
 +  if (!handoff || !handoff->requests || !handoff->pageTables || !handoff->context)
 +    return probeStop("no trusted board handoff");
++#ifdef HOUJI_GPU_FILESYSTEM_GATE
++  if (!houjiNativeGpuFsAllowed()) return probeStop("GPU/UFS coexistence not ready");
++#endif
 +  if (__atomic_exchange_n(&claimed, 1U, __ATOMIC_ACQ_REL))
 +    return probeStop("one attempt per boot");
 +  if (handoff->requests == handoff->pageTables || handoff->tablePages == 0 ||
@@ -271,11 +274,9 @@ diff --git a/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp b/iokit/Kernel/houji-u
  };
  UfsHost gHost = { OSSharedPtr<IOMemoryMap> (), OSSharedPtr<IOMemoryMap> (), 0, nullptr, nullptr, 0, nullptr, false };
  static bool gLogEnabled, gRootEnabled, gRootArmed, gReturnRecovery;
-@@ -206,8 +213,14 @@
+@@ -208,6 +215,13 @@
  
- #include "RootQueue.h"
- 
--#define HOUJI_GPU_FILESYSTEM_GATE 1
+ #define HOUJI_GPU_FILESYSTEM_GATE 1
  #include "RootCommands.h"
 +static unsigned probeCacheLineBytes() {
 +  uint64_t ctr;
@@ -287,7 +288,7 @@ diff --git a/iokit/Kernel/houji-ufs-root/HoujiUfsRead.cpp b/iokit/Kernel/houji-u
  
  // Bring the live controller up for reading: map, SMMU pass-through for the UFS stream, take over
  // the request list, wake the device from UFS-PowerDown and wait for LUN 0 to be ready.
-@@ -220,7 +233,15 @@
+@@ -220,7 +234,15 @@
  }
  }
  
